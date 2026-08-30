@@ -441,3 +441,76 @@ def test_runtime_signature_gates_mtp_depth_on_lightning_mtp():
     assert pool._engine_runtime_signature("m", depth_3_off) == pool._engine_runtime_signature(
         "m", depth_8_off
     )
+
+
+
+@pytest.mark.asyncio
+async def test_gemma4_ane_prefill_settings_are_persisted():
+    pool, entry = _failed_pool()
+    entry.config_model_type = "gemma4_text"
+    settings = ModelSettings()
+
+    await _update_settings(
+        pool,
+        settings,
+        admin_routes.ModelSettingsRequest(
+            gemma4_ane_prefill_enabled=True,
+            gemma4_ane_prefill_sequence_length=2048,
+            gemma4_ane_prefill_tail_padding_min_tokens=1400,
+            gemma4_ane_prefill_fraction=0.42,
+            gemma4_ane_prefill_max_layers=60,
+            gemma4_ane_prefill_dual_ane=False,
+        ),
+    )
+
+    assert settings.gemma4_ane_prefill_enabled is True
+    assert settings.gemma4_ane_prefill_sequence_length == 2048
+    assert settings.gemma4_ane_prefill_tail_padding_min_tokens == 1400
+    assert settings.gemma4_ane_prefill_fraction == 0.42
+    assert settings.gemma4_ane_prefill_max_layers == 60
+    assert settings.gemma4_ane_prefill_dual_ane is False
+
+
+@pytest.mark.asyncio
+async def test_gemma4_ane_prefill_rejects_other_model_families():
+    pool, entry = _failed_pool()
+    entry.config_model_type = "qwen3_5"
+
+    with pytest.raises(admin_routes.HTTPException, match="Gemma 4"):
+        await _update_settings(
+            pool,
+            ModelSettings(),
+            admin_routes.ModelSettingsRequest(gemma4_ane_prefill_enabled=True),
+        )
+
+
+@pytest.mark.asyncio
+async def test_gemma4_ane_prefill_rejects_invalid_block_size():
+    pool, entry = _failed_pool()
+    entry.config_model_type = "gemma4"
+
+    with pytest.raises(admin_routes.HTTPException, match="multiple of 64"):
+        await _update_settings(
+            pool,
+            ModelSettings(),
+            admin_routes.ModelSettingsRequest(
+                gemma4_ane_prefill_sequence_length=2000
+            ),
+        )
+
+
+@pytest.mark.asyncio
+async def test_gemma4_ane_block_change_clears_a_stale_tail_threshold():
+    """A padding crossover is calibrated for one program width."""
+    pool, entry = _failed_pool()
+    entry.config_model_type = "gemma4"
+    settings = ModelSettings(gemma4_ane_prefill_tail_padding_min_tokens=1900)
+
+    await _update_settings(
+        pool,
+        settings,
+        admin_routes.ModelSettingsRequest(gemma4_ane_prefill_sequence_length=1536),
+    )
+
+    assert settings.gemma4_ane_prefill_sequence_length == 1536
+    assert settings.gemma4_ane_prefill_tail_padding_min_tokens == 0

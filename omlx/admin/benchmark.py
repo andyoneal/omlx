@@ -248,6 +248,12 @@ _FEATURE_FLAG_SPECS = (
         detail_key_fmt="_{}bit",
         detail_label_fmt=" {}-bit",
     ),
+    _FeatureFlagSpec(
+        "gemma4_ane_prefill_enabled",
+        "gemma4_ane_prefill",
+        "gemma4_ane_prefill",
+        "Gemma 4 ANE Prefill",
+    ),
     _FeatureFlagSpec("mtp_enabled", "mtp", "lightning_mtp", "Lightning MTP"),
     _FeatureFlagSpec("vlm_mtp_enabled", "vlm_mtp", "vlm_mtp", "VLM MTP"),
     _FeatureFlagSpec(
@@ -1897,6 +1903,50 @@ async def run_benchmark(run: BenchmarkRun, engine_pool: Any) -> None:
                 logger.info(
                     "Qwen ANE prefill is enabled in settings but inactive at "
                     "runtime; benchmark metadata reports it as off"
+                )
+        if model_settings is not None and getattr(
+            model_settings, "gemma4_ane_prefill_enabled", False
+        ):
+            # Same intent-versus-runtime split as the Qwen block above: the
+            # shared patch records what it actually compiled on the model.
+            loaded_model = getattr(engine, "_model", None) or getattr(
+                engine, "_vlm_model", None
+            )
+            compiled_mlp = getattr(
+                loaded_model, "_omlx_ane_mlp_prefill_count", None
+            )
+            ane_trace_config = {
+                "sequence_length": int(
+                    getattr(
+                        model_settings,
+                        "gemma4_ane_prefill_sequence_length",
+                        2048,
+                    )
+                ),
+                "mlp_layers": int(
+                    getattr(model_settings, "gemma4_ane_prefill_max_layers", 0)
+                ),
+                "gdn_layers": 0,
+                "compiled_mlp_layers": (
+                    None if compiled_mlp is None else int(compiled_mlp)
+                ),
+                "compiled_gdn_layers": 0,
+                "active": bool(compiled_mlp),
+            }
+            if not compiled_mlp:
+                run.feature_flags = [
+                    flag
+                    for flag in run.feature_flags
+                    if flag.get("key") != "gemma4_ane_prefill"
+                ]
+                run.experimental_features = [
+                    feature
+                    for feature in run.experimental_features
+                    if feature != "gemma4_ane_prefill"
+                ]
+                logger.info(
+                    "Gemma 4 ANE prefill is enabled in settings but inactive "
+                    "at runtime; benchmark metadata reports it as off"
                 )
         logger.info(
             "[benchmark-ane-config] model=%s enabled=%s config=%s",

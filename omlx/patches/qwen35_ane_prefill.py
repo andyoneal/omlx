@@ -31,6 +31,7 @@ _PATCHED_CLASSES: set[type] = set()
 _VLM_HOOK_INSTALLED = False
 _VLM_GDN_HOOK_INSTALLED = False
 _GDN_MODULES: weakref.WeakValueDictionary[int, Any] = weakref.WeakValueDictionary()
+_GEGLU: Callable[[mx.array, mx.array], mx.array] | None = None
 # Legacy extensions compile one program per slice, and the private runtime on
 # the reference M3 Ultra accepts 120 resident programs. Current extensions pack
 # all slices into one multi-procedure program per ANE instance and bypass this
@@ -95,6 +96,7 @@ class _AnePrefillConfig:
     ane_down_fraction: float = 0.0
     fused_down: bool = False
     tail_padding_min_tokens: int = 0
+    geglu: bool = False
 
 
 @dataclass(frozen=True)
@@ -248,6 +250,26 @@ def _fused_swiglu_symbol(bits: int, *, dual: bool) -> str:
             else "qwen35_ane_affine_swiglu_t"
         )
     raise ValueError(f"Unsupported ANE SwiGLU bit width: {bits}")
+
+
+def _geglu_args(config: _AnePrefillConfig) -> tuple:
+    """Trailing activation argument for the fused entry points, omitted when
+    SwiGLU is in force so the Qwen call sites keep their existing shape."""
+    return (True,) if config.geglu else ()
+
+
+def _glu(config: _AnePrefillConfig) -> Callable[[mx.array, mx.array], mx.array]:
+    """Activation for the raw-merge fallback and the tokenwise tail, matching
+    the fused merge kernel the ANE path selects. Imported lazily so the Qwen
+    path never pays for a Gemma module import."""
+    if not config.geglu:
+        return swiglu
+    global _GEGLU
+    if _GEGLU is None:
+        from mlx_lm.models.gemma4_text import geglu
+
+        _GEGLU = geglu
+    return _GEGLU
 
 
 def _eligible_input(x: mx.array, config: _AnePrefillConfig) -> bool:
@@ -1882,6 +1904,7 @@ def _backend_exact(
                     state.model1,
                     config.variant,
                     state.group_size,
+                    *_geglu_args(config),
                 )
             else:
                 if not fast.has_symbol(_fused_swiglu_symbol(state.bits, dual=True)):
@@ -1896,6 +1919,7 @@ def _backend_exact(
                     state.bits,
                     config.variant,
                     state.group_size,
+                    *_geglu_args(config),
                 )
             return _post_ane_down(
                 mlp.down_proj,
@@ -1917,6 +1941,7 @@ def _backend_exact(
                 state.bits,
                 config.variant,
                 state.group_size,
+                *_geglu_args(config),
             )
             return _post_ane_down(
                 mlp.down_proj,
@@ -1935,6 +1960,7 @@ def _backend_exact(
                 state.model,
                 config.variant,
                 state.group_size,
+                *_geglu_args(config),
             )
             return _post_ane_down(
                 mlp.down_proj,
@@ -1973,7 +1999,7 @@ def _backend_exact(
 
         return _post_ane_down(
             mlp.down_proj,
-            swiglu(gate, up),
+            _glu(config)(gate, up),
             state.down_ane,
             config,
             state.down_cpu,
@@ -2051,7 +2077,7 @@ def _backend(
             up = _tail_qmm_or_linear(mlp.up_proj, tail_x, config.variant)
             outputs.append(
                 _tail_qmm_or_linear(
-                    mlp.down_proj, swiglu(gate, up), config.variant
+                    mlp.down_proj, _glu(config)(gate, up), config.variant
                 )
             )
     return mx.concatenate(outputs, axis=-2)
@@ -2073,7 +2099,18 @@ def _wrap_class(cls: type) -> None:
     _PATCHED_CLASSES.add(cls)
 
 
-def _install_dispatch() -> bool:
+def _install_dispatch(mlp_classes: tuple[type, ...] = ()) -> bool:
+    """Install the prefill hook and report whether anything now dispatches.
+
+    ``mlp_classes``, when given, is wrapped directly: families without
+    mlx-vlm's inner registration hook or a GDN stack (Gemma 4) name their own
+    MLP classes rather than going through the Qwen backend scan below.
+    """
+    if mlp_classes:
+        for cls in mlp_classes:
+            _wrap_class(cls)
+        return bool(mlp_classes)
+
     global _VLM_GDN_HOOK_INSTALLED, _VLM_HOOK_INSTALLED
     installed = False
     try:
@@ -3127,11 +3164,18 @@ def enable_qwen35_ane_prefill(
     cpu_threads: int = 8,
     cpu_shared_resource: bool = True,
     tail_padding_min_tokens: int = 0,
+    geglu: bool = False,
+    mlp_classes: tuple[type, ...] = (),
 ) -> int:
     """Enable the private ANE backend on eligible MLPs in ``model``.
 
-    Returns the number of marked dense Qwen MLP modules. A return value of zero
-    is a safe no-op for other model families and unsupported runtimes.
+    Returns the number of marked dense MLP modules. A return value of zero is
+    a safe no-op for other model families and unsupported runtimes.
+
+    ``geglu`` selects the tanh-GELU merge instead of SwiGLU, and
+    ``mlp_classes`` names the classes to wrap; both default to the Qwen
+    behaviour, so this stays one runtime shared across families rather than a
+    fork per family.
     """
     if sequence_length < 1024 or sequence_length % 64:
         raise ValueError("ANE prefill sequence_length must be a multiple of 64 >= 1024")
@@ -3164,6 +3208,13 @@ def enable_qwen35_ane_prefill(
         raise ValueError(
             "ANE tail padding threshold must be zero or less than sequence_length"
         )
+    if geglu and (cpu_fraction > 0 or cpu_down_fraction > 0 or fused_down):
+        # Only the two non-CPU merge kernels are instantiated for GeGLU; the
+        # CPU-shared and fused-down merges still hard-code SwiGLU, so these
+        # combinations would silently compute the wrong activation.
+        raise ValueError(
+            "GeGLU ANE prefill supports neither CPU sharing nor fused down"
+        )
 
     env = os.environ.get("OMLX_QWEN35_ANE_PREFILL", "").strip().lower()
     if env in ("0", "false", "off"):
@@ -3178,7 +3229,15 @@ def enable_qwen35_ane_prefill(
     except Exception:
         logger.warning("ANE native extension unavailable; Qwen ANE prefill skipped")
         return 0
-    if not _install_dispatch():
+    if geglu and not fast.qwen35_ane_fused_geglu_available():
+        logger.warning(
+            "Native extension has no fused GeGLU merge; ANE prefill skipped"
+        )
+        return 0
+    installed = (
+        _install_dispatch(mlp_classes) if mlp_classes else _install_dispatch()
+    )
+    if not installed:
         logger.warning(
             "Qwen ANE prefill: dispatch hook could not be installed "
             "(mlx-vlm/mlx-lm Qwen backend not registered); ANE prefill inactive, "
@@ -3198,6 +3257,7 @@ def enable_qwen35_ane_prefill(
         ane_down_fraction=ane_down_fraction if dual_ane else 0.0,
         fused_down=fused_down and dual_ane,
         tail_padding_min_tokens=tail_padding_min_tokens,
+        geglu=geglu,
     )
     model._omlx_ane_tail_padding_min_tokens = tail_padding_min_tokens
     if ane_down_fraction > 0 and not dual_ane:

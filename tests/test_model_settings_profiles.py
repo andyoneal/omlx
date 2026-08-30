@@ -422,6 +422,28 @@ class TestProfileFieldFiltering:
         assert applied.qwen35_ane_prefill_gdn_fraction == 0.50
         assert applied.qwen35_ane_prefill_gdn_max_layers == 48
 
+    def test_gemma4_ane_prefill_fields_round_trip_as_model_specific(self, mgr):
+        settings = {
+            "gemma4_ane_prefill_enabled": True,
+            "gemma4_ane_prefill_sequence_length": 2048,
+            "gemma4_ane_prefill_tail_padding_min_tokens": 1357,
+            "gemma4_ane_prefill_fraction": 0.50,
+            "gemma4_ane_prefill_max_layers": 60,
+            "gemma4_ane_prefill_dual_ane": False,
+        }
+
+        mgr.save_profile("m", "gemma4-ane", "Gemma 4 ANE", None, settings)
+        assert mgr.get_profile("m", "gemma4-ane")["settings"] == settings
+
+        mgr.apply_profile("m", "gemma4-ane")
+        applied = mgr.get_settings("m")
+        assert applied.gemma4_ane_prefill_enabled is True
+        assert applied.gemma4_ane_prefill_sequence_length == 2048
+        assert applied.gemma4_ane_prefill_tail_padding_min_tokens == 1357
+        assert applied.gemma4_ane_prefill_fraction == 0.50
+        assert applied.gemma4_ane_prefill_max_layers == 60
+        assert applied.gemma4_ane_prefill_dual_ane is False
+
     def test_save_template_drops_none_and_empty_string_values(self, mgr):
         mgr.save_template(
             "t",

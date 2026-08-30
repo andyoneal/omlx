@@ -123,16 +123,70 @@ class ANETuningRun:
     created_at: float = field(default_factory=time.time)
 
 
-def _fraction_grid() -> list[float]:
-    """ANE widths worth compiling into the representative calibration bank."""
+# Widths are sampled at these shares of a memory-derived ceiling when no
+# fixed width fits, leaving margin for the compile-time staging copies the
+# ceiling itself does not model.
+_HEADROOM_GRID_MARGIN = 0.90
+_HEADROOM_GRID_SHARES = (0.55, 0.70, 0.85, 1.0)
+_MIN_TUNABLE_FRACTION = 0.05
+
+
+def _fraction_grid(ceiling: float | None = None) -> list[float]:
+    """ANE widths worth compiling into the representative calibration bank.
+
+    ``ceiling`` is the largest fraction whose procedure bank still fits the
+    bank compiler's memory-headroom gate. Without it a machine where every
+    fixed width exceeds the gate reports one failure per width instead of
+    finding the best fraction that does fit.
+    """
     try:
         from ..custom_kernels.nax import is_nax_available
 
         if is_nax_available():
-            return [0.15, 0.25, 0.35, 0.45, 0.53]
+            grid = [0.15, 0.25, 0.35, 0.45, 0.53]
+        else:
+            grid = [0.40, 0.45, 0.50, 0.53, 0.60]
     except Exception:
-        pass
-    return [0.40, 0.45, 0.50, 0.53, 0.60]
+        grid = [0.40, 0.45, 0.50, 0.53, 0.60]
+    if ceiling is None:
+        return grid
+    fits = [value for value in grid if value <= ceiling]
+    if fits:
+        return fits
+    top = min(0.90, ceiling * _HEADROOM_GRID_MARGIN)
+    sampled = sorted(
+        {
+            round(top * share, 3)
+            for share in _HEADROOM_GRID_SHARES
+            if top * share >= _MIN_TUNABLE_FRACTION
+        }
+    )
+    return sampled or grid[:1]
+
+
+def _headroom_fraction_ceiling(patch: Any, mlp: Any, layers: int) -> float | None:
+    """Largest ANE gate/up fraction that still clears the bank memory gate.
+
+    The bank compiler refuses another attempt once ``phys_footprint`` passes
+    a fixed share of system memory, and the offload costs one INT8 byte per
+    gate/up weight it takes. Returns ``None`` when either the measurement or
+    the geometry is unavailable, leaving the fixed grid in place.
+    """
+    try:
+        current, total = patch._ane_bank_memory_footprint_snapshot()
+        if total <= 0 or current <= 0 or layers <= 0:
+            return None
+        budget = total * patch._ANE_BANK_RETRY_MAX_MEMORY_FRACTION - current
+        gate = getattr(mlp, "gate_proj", None)
+        outputs = int(gate.weight.shape[0])
+        inputs = int(gate.scales.shape[1]) * int(gate.group_size)
+    except Exception:
+        return None
+    # gate and up, one INT8 byte per weight, across every offloaded layer.
+    bank_bytes = 2 * outputs * inputs * layers
+    if bank_bytes <= 0:
+        return None
+    return max(0.0, budget / bank_bytes)
 
 
 def _cpu_fraction_grid() -> list[float]:
@@ -1648,6 +1702,18 @@ def _calibrate_components_sync(
         run.gdn_floor = _min_viable_gdn_fraction(
             patch, gdn, 128 if dual_ane else 64
         )
+
+    eligible_layers = sum(1 for module in modules if patch._eligible_pair(module))
+    ceiling = _headroom_fraction_ceiling(patch, mlp, eligible_layers)
+    if ceiling is not None:
+        narrowed = _fraction_grid(ceiling)
+        if narrowed != run.fractions:
+            logger.info(
+                "ANE tuning: %.2f headroom ceiling narrows the width grid to %s",
+                ceiling,
+                narrowed,
+            )
+            run.fractions = narrowed
 
     gate = mlp.gate_proj
     down = mlp.down_proj

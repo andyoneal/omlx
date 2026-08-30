@@ -306,3 +306,46 @@ def test_js_embedded_translations_escape_apostrophes():
         r"'\{\{ t\('[a-z_.0-9]+'\) \}\}'", _model_settings_template()
     )
     assert unsafe == []
+
+
+def test_gemma4_ane_section_is_gated_on_the_gemma_family():
+    html = _model_settings_template()
+    script = _dashboard_script()
+
+    section = _section(
+        html,
+        "<!-- Gemma 4 private ANE/GPU prompt processing -->",
+        "<!-- TurboQuant KV Cache -->",
+    )
+    assert 'x-if="isGemma4AnePrefillModel(selectedModel)"' in section
+    for field in (
+        "gemma4_ane_prefill_enabled",
+        "gemma4_ane_prefill_sequence_length",
+        "gemma4_ane_prefill_tail_padding_min_tokens",
+        "gemma4_ane_prefill_fraction",
+        "gemma4_ane_prefill_max_layers",
+        "gemma4_ane_prefill_dual_ane",
+    ):
+        assert field in section
+        assert f"'{field}'" in script
+
+    # No GDN, CPU or fused-down controls: the family has no use for them.
+    for absent in ("gdn", "cpu_", "fused_down"):
+        assert f"gemma4_ane_prefill_{absent}" not in html
+
+    assert "isGemma4AnePrefillModel(model)" in script
+    assert "GEMMA4_ANE_CONFIG_PREFIXES = ['gemma4']" in script
+
+
+def test_gemma4_ane_strings_exist_in_every_locale():
+    root = Path(__file__).resolve().parents[1]
+    locales = sorted((root / "omlx/admin/i18n").glob("*.json"))
+    assert len(locales) == 9
+    for path in locales:
+        keys = json.loads(path.read_text())
+        for key in (
+            "modal.model_settings.gemma4_ane",
+            "modal.model_settings.gemma4_ane_hint",
+            "modal.model_settings.gemma4_ane_down_hint",
+        ):
+            assert keys.get(key), f"{path.name} is missing {key}"

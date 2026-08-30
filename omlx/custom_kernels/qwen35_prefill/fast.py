@@ -494,6 +494,25 @@ def qwen35_ane_compile_fp16_linear(weight: mx.array, sequence_length: int):
     return _ext.qwen35_ane_compile_fp16_linear(weight, sequence_length)
 
 
+def _geglu_args(geglu: bool) -> tuple:
+    """Trailing ``geglu`` argument for the fused merge entry points.
+
+    Prebuilt extensions predating GeGLU support have no such parameter, so
+    omit it entirely rather than passing its default: the SwiGLU families
+    keep working against an older ``_ext`` and only the GeGLU path degrades,
+    which ``qwen35_ane_fused_geglu_available()`` reports up front.
+    """
+    return (True,) if geglu else ()
+
+
+def qwen35_ane_fused_geglu_available() -> bool:
+    return bool(
+        qwen35_ane_available()
+        and hasattr(_ext, "qwen35_ane_fused_geglu_available")
+        and _ext.qwen35_ane_fused_geglu_available()
+    )
+
+
 def qwen35_ane_swiglu_down_available() -> bool:
     return bool(
         qwen35_ane_available()
@@ -564,6 +583,7 @@ def qwen35_ane_q4_swiglu_t(
     ane_model,
     variant: int = 8,
     group_size: int = 128,
+    geglu: bool = False,
 ) -> mx.array:
     if _ext is None or not hasattr(_ext, "qwen35_ane_q4_swiglu_t"):
         raise RuntimeError("ANE hybrid q4 SwiGLU native kernel is unavailable")
@@ -575,6 +595,7 @@ def qwen35_ane_q4_swiglu_t(
         ane_model,
         variant,
         group_size,
+        *_geglu_args(geglu),
     )
 
 
@@ -587,6 +608,7 @@ def qwen35_ane_affine_swiglu_t(
     bits: int,
     variant: int = 8,
     group_size: int = 128,
+    geglu: bool = False,
 ) -> mx.array:
     if _ext is None or not hasattr(_ext, "qwen35_ane_affine_swiglu_t"):
         raise RuntimeError("ANE hybrid affine SwiGLU native kernel is unavailable")
@@ -599,6 +621,7 @@ def qwen35_ane_affine_swiglu_t(
         bits,
         variant,
         group_size,
+        *_geglu_args(geglu),
     )
 
 
@@ -639,6 +662,7 @@ def qwen35_ane_dual_q4_swiglu_t(
     ane_model1,
     variant: int = 8,
     group_size: int = 128,
+    geglu: bool = False,
 ) -> mx.array:
     if _ext is None or not hasattr(_ext, "qwen35_ane_dual_q4_swiglu_t"):
         raise RuntimeError("Dual ANE hybrid q4 SwiGLU native kernel is unavailable")
@@ -651,6 +675,7 @@ def qwen35_ane_dual_q4_swiglu_t(
         ane_model1,
         variant,
         group_size,
+        *_geglu_args(geglu),
     )
 
 
@@ -664,6 +689,7 @@ def qwen35_ane_dual_affine_swiglu_t(
     bits: int,
     variant: int = 8,
     group_size: int = 128,
+    geglu: bool = False,
 ) -> mx.array:
     if _ext is None or not hasattr(_ext, "qwen35_ane_dual_affine_swiglu_t"):
         raise RuntimeError(
@@ -679,6 +705,7 @@ def qwen35_ane_dual_affine_swiglu_t(
         bits,
         variant,
         group_size,
+        *_geglu_args(geglu),
     )
 
 

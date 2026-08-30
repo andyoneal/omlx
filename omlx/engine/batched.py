@@ -538,6 +538,65 @@ class BatchedEngine(BaseEngine):
             except Exception:
                 logger.warning("Qwen ANE prefill not enabled", exc_info=True)
 
+        # Gemma 4 hybrid ANE prefill: the same runtime with the GeGLU merge
+        # and the Gemma MLP classes. Mutually exclusive with the Qwen block
+        # above only in practice -- no checkpoint carries both families.
+        if getattr(self._model_settings, "gemma4_ane_prefill_enabled", False):
+            try:
+                from ..patches.gemma4_ane_prefill import enable_gemma4_ane_prefill
+
+                requested_gemma4_sequence_length = int(
+                    getattr(
+                        self._model_settings,
+                        "gemma4_ane_prefill_sequence_length",
+                        2048,
+                    )
+                )
+
+                def _enable_gemma4_ane_prefill():
+                    return enable_gemma4_ane_prefill(
+                        self._model,
+                        sequence_length=requested_gemma4_sequence_length,
+                        tail_padding_min_tokens=int(
+                            getattr(
+                                self._model_settings,
+                                "gemma4_ane_prefill_tail_padding_min_tokens",
+                                0,
+                            )
+                            or 0
+                        ),
+                        fraction=float(
+                            getattr(
+                                self._model_settings,
+                                "gemma4_ane_prefill_fraction",
+                                0.50,
+                            )
+                        ),
+                        max_layers=int(
+                            getattr(
+                                self._model_settings,
+                                "gemma4_ane_prefill_max_layers",
+                                60,
+                            )
+                        ),
+                        dual_ane=bool(
+                            getattr(
+                                self._model_settings,
+                                "gemma4_ane_prefill_dual_ane",
+                                True,
+                            )
+                        ),
+                    )
+
+                gemma4_ane_count = await loop.run_in_executor(
+                    get_mlx_executor(),
+                    _enable_gemma4_ane_prefill,
+                )
+                if gemma4_ane_count:
+                    ane_prefill_sequence_length = requested_gemma4_sequence_length
+            except Exception:
+                logger.warning("Gemma 4 ANE prefill not enabled", exc_info=True)
+
         # Qwen3.5/3.6 sparse MoE prefill -> native weighted-sum after sorted
         # SwitchGLU. Strictly gated; decode and unsupported MoE variants fall
         # through to stock mlx-lm.

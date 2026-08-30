@@ -697,6 +697,30 @@ class EnginePool:
                     data.get("qwen35_ane_prefill_cpu_shared_resource", True),
                 )
 
+        gemma4_ane_active = bool(data.get("gemma4_ane_prefill_enabled", False))
+        add("gemma4_ane_prefill_enabled", gemma4_ane_active)
+        if gemma4_ane_active:
+            add(
+                "gemma4_ane_prefill_sequence_length",
+                data.get("gemma4_ane_prefill_sequence_length", 2048),
+            )
+            add(
+                "gemma4_ane_prefill_tail_padding_min_tokens",
+                data.get("gemma4_ane_prefill_tail_padding_min_tokens", 0),
+            )
+            add(
+                "gemma4_ane_prefill_fraction",
+                data.get("gemma4_ane_prefill_fraction", 0.50),
+            )
+            add(
+                "gemma4_ane_prefill_max_layers",
+                data.get("gemma4_ane_prefill_max_layers", 60),
+            )
+            add(
+                "gemma4_ane_prefill_dual_ane",
+                data.get("gemma4_ane_prefill_dual_ane", True),
+            )
+
         specprefill_active = bool(data.get("specprefill_enabled", False)) and has_value(
             "specprefill_draft_model"
         )
