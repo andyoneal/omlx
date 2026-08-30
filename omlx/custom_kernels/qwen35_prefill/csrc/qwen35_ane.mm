@@ -2388,13 +2388,14 @@ public:
                        int bits, int variant, int group_size,
                        bool fuse_swiglu = false, int profile_category = -1,
                        bool cpu_fp16 = false, int cpu_threads = 0,
-                       bool cpu_shared_resource = false)
+                       bool cpu_shared_resource = false,
+                       bool geglu = false)
       : Primitive(stream), model_(std::move(model)), variant_(variant),
         bits_(bits), group_size_(group_size), fuse_swiglu_(fuse_swiglu),
         profile_category_(profile_category >= 0 ? profile_category
                                                 : (fuse_swiglu ? 0 : 1)),
         cpu_fp16_(cpu_fp16), cpu_threads_(cpu_threads),
-        cpu_shared_resource_(cpu_shared_resource) {}
+        cpu_shared_resource_(cpu_shared_resource), geglu_(geglu) {}
 
   void eval_cpu(const std::vector<array> &, std::vector<array> &) override {
     throw std::runtime_error("ANE hybrid qmm has no CPU implementation.");
@@ -2624,8 +2625,10 @@ public:
         std::string(cpu_weight
                         ? (fuse_swiglu_ ? "qwen35_ane_merge_cpu_swiglu_output_"
                                         : "qwen35_ane_merge_cpu_output_")
-                        : (fuse_swiglu_ ? "qwen35_ane_merge_swiglu_output_"
-                                        : "qwen35_ane_merge_output_")) +
+                        : (fuse_swiglu_
+                               ? (geglu_ ? "qwen35_ane_merge_geglu_output_"
+                                         : "qwen35_ane_merge_swiglu_output_")
+                               : "qwen35_ane_merge_output_")) +
             metal_type_name(x.dtype()),
         library);
     encoder.set_compute_pipeline_state(merge);
@@ -2704,14 +2707,14 @@ public:
     const auto &rhs = static_cast<const AneHybridQ4Primitive &>(other);
     return model_.get() == rhs.model_.get() && bits_ == rhs.bits_ &&
            variant_ == rhs.variant_ && group_size_ == rhs.group_size_ &&
-           fuse_swiglu_ == rhs.fuse_swiglu_ &&
+           fuse_swiglu_ == rhs.fuse_swiglu_ && geglu_ == rhs.geglu_ &&
            profile_category_ == rhs.profile_category_ &&
            cpu_fp16_ == rhs.cpu_fp16_ && cpu_threads_ == rhs.cpu_threads_ &&
            cpu_shared_resource_ == rhs.cpu_shared_resource_;
   }
   auto state() const {
     return std::make_tuple(reinterpret_cast<uintptr_t>(model_.get()), bits_,
-                           variant_, group_size_, fuse_swiglu_,
+                           variant_, group_size_, fuse_swiglu_, geglu_,
                            profile_category_, cpu_fp16_, cpu_threads_,
                            cpu_shared_resource_);
   }
@@ -2722,6 +2725,7 @@ private:
   int bits_;
   int group_size_;
   bool fuse_swiglu_;
+  bool geglu_;
   int profile_category_;
   bool cpu_fp16_;
   int cpu_threads_;
@@ -2736,14 +2740,15 @@ public:
                          int variant, int group_size, bool fuse_swiglu = false,
                          int profile_category = -1, bool cpu_fp16 = false,
                          int cpu_threads = 0,
-                         bool cpu_shared_resource = false)
+                         bool cpu_shared_resource = false,
+                         bool geglu = false)
       : Primitive(stream), model0_(std::move(model0)),
         model1_(std::move(model1)), variant_(variant), bits_(bits),
         group_size_(group_size), fuse_swiglu_(fuse_swiglu),
         profile_category_(profile_category >= 0 ? profile_category
                                                 : (fuse_swiglu ? 0 : 1)),
         cpu_fp16_(cpu_fp16), cpu_threads_(cpu_threads),
-        cpu_shared_resource_(cpu_shared_resource) {}
+        cpu_shared_resource_(cpu_shared_resource), geglu_(geglu) {}
 
   void eval_cpu(const std::vector<array> &, std::vector<array> &) override {
     throw std::runtime_error("Dual ANE hybrid qmm has no CPU implementation.");
@@ -2965,7 +2970,9 @@ public:
                                ? "qwen35_ane_merge_dual_cpu_swiglu_output_"
                                : "qwen35_ane_merge_dual_cpu_output_")
                         : (fuse_swiglu_
-                               ? "qwen35_ane_merge_dual_swiglu_output_"
+                               ? (geglu_
+                                      ? "qwen35_ane_merge_dual_geglu_output_"
+                                      : "qwen35_ane_merge_dual_swiglu_output_")
                                : "qwen35_ane_merge_dual_output_")) +
             metal_type_name(x.dtype()),
         library);
@@ -3045,7 +3052,7 @@ public:
     return model0_.get() == rhs.model0_.get() &&
            model1_.get() == rhs.model1_.get() && bits_ == rhs.bits_ &&
            variant_ == rhs.variant_ && group_size_ == rhs.group_size_ &&
-           fuse_swiglu_ == rhs.fuse_swiglu_ &&
+           fuse_swiglu_ == rhs.fuse_swiglu_ && geglu_ == rhs.geglu_ &&
            profile_category_ == rhs.profile_category_ &&
            cpu_fp16_ == rhs.cpu_fp16_ && cpu_threads_ == rhs.cpu_threads_ &&
            cpu_shared_resource_ == rhs.cpu_shared_resource_;
@@ -3053,7 +3060,7 @@ public:
   auto state() const {
     return std::make_tuple(reinterpret_cast<uintptr_t>(model0_.get()),
                            reinterpret_cast<uintptr_t>(model1_.get()), bits_,
-                           variant_, group_size_, fuse_swiglu_,
+                           variant_, group_size_, fuse_swiglu_, geglu_,
                            profile_category_, cpu_fp16_, cpu_threads_,
                            cpu_shared_resource_);
   }
@@ -3065,6 +3072,7 @@ private:
   int bits_;
   int group_size_;
   bool fuse_swiglu_;
+  bool geglu_;
   int profile_category_;
   bool cpu_fp16_;
   int cpu_threads_;
@@ -3452,6 +3460,8 @@ bool qwen35_cpu_shared_resource_available() {
   return cpu_shared_resource_policy_available();
 }
 
+bool qwen35_ane_fused_geglu_available() { return true; }
+
 array qwen35_cpu_fp16_affine_qmm_t(
     const array &x, const array &cpu_weight, const array &gpu_weight,
     const array &gpu_scales, const array &gpu_biases, int bits, int variant,
@@ -3582,7 +3592,7 @@ array qwen35_ane_q4_affine_qmm_t(
 array qwen35_ane_affine_swiglu_t(
     const array &x, const array &gpu_weight, const array &gpu_scales,
     const array &gpu_biases, const std::shared_ptr<AneLinearModel> &ane_model,
-    int bits, int variant, int group_size, StreamOrDevice s) {
+    int bits, int variant, int group_size, bool geglu, StreamOrDevice s) {
   auto stream = to_stream(s);
   if (!ane_model || stream.device == Device::cpu ||
       (x.dtype() != float16 && x.dtype() != bfloat16) || x.ndim() < 2 ||
@@ -3611,7 +3621,10 @@ array qwen35_ane_affine_swiglu_t(
   shape.back() = (ane_n + gpu_n) / 2;
   return array(std::move(shape), x.dtype(),
                std::make_shared<AneHybridQ4Primitive>(
-                   stream, ane_model, bits, variant, group_size, true),
+                   stream, ane_model, bits, variant, group_size,
+                   /* fuse_swiglu */ true, /* profile_category */ -1,
+                   /* cpu_fp16 */ false, /* cpu_threads */ 0,
+                   /* cpu_shared_resource */ false, geglu),
                std::vector<array>{x, gpu_weight, gpu_scales, gpu_biases});
 }
 
@@ -3673,9 +3686,10 @@ array qwen35_ane_cpu_fp16_q4_swiglu_t(
 array qwen35_ane_q4_swiglu_t(
     const array &x, const array &gpu_weight, const array &gpu_scales,
     const array &gpu_biases, const std::shared_ptr<AneLinearModel> &ane_model,
-    int variant, int group_size, StreamOrDevice s) {
+    int variant, int group_size, bool geglu, StreamOrDevice s) {
   return qwen35_ane_affine_swiglu_t(x, gpu_weight, gpu_scales, gpu_biases,
-                                    ane_model, 4, variant, group_size, s);
+                                    ane_model, 4, variant, group_size, geglu,
+                                    s);
 }
 
 array qwen35_ane_dual_affine_qmm_t(
@@ -3819,7 +3833,7 @@ array qwen35_ane_dual_affine_swiglu_t(
     const array &gpu_biases,
     const std::shared_ptr<AneLinearModel> &ane_model0,
     const std::shared_ptr<AneLinearModel> &ane_model1, int bits, int variant,
-    int group_size, StreamOrDevice s) {
+    int group_size, bool geglu, StreamOrDevice s) {
   auto stream = to_stream(s);
   if (!ane_model0 || !ane_model1 || stream.device == Device::cpu ||
       (x.dtype() != float16 && x.dtype() != bfloat16) || x.ndim() < 2 ||
@@ -3854,7 +3868,10 @@ array qwen35_ane_dual_affine_swiglu_t(
   return array(
       std::move(shape), x.dtype(),
       std::make_shared<DualAneHybridPrimitive>(
-          stream, ane_model0, ane_model1, bits, variant, group_size, true),
+          stream, ane_model0, ane_model1, bits, variant, group_size,
+          /* fuse_swiglu */ true, /* profile_category */ -1,
+          /* cpu_fp16 */ false, /* cpu_threads */ 0,
+          /* cpu_shared_resource */ false, geglu),
       std::vector<array>{x, gpu_weight, gpu_scales, gpu_biases});
 }
 
@@ -3863,10 +3880,10 @@ array qwen35_ane_dual_q4_swiglu_t(
     const array &gpu_biases,
     const std::shared_ptr<AneLinearModel> &ane_model0,
     const std::shared_ptr<AneLinearModel> &ane_model1, int variant,
-    int group_size, StreamOrDevice s) {
+    int group_size, bool geglu, StreamOrDevice s) {
   return qwen35_ane_dual_affine_swiglu_t(
       x, gpu_weight, gpu_scales, gpu_biases, ane_model0, ane_model1, 4,
-      variant, group_size, s);
+      variant, group_size, geglu, s);
 }
 
 array qwen35_ane_dual_cpu_fp16_q4_swiglu_t(

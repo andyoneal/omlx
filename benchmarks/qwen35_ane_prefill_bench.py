@@ -234,6 +234,15 @@ def main() -> None:
         type=float,
         help="Benchmark several CPU down shares after one ANE compilation",
     )
+    parser.add_argument(
+        "--family",
+        choices=("qwen35", "gemma4"),
+        default="qwen35",
+        help=(
+            "Model family to enable. gemma4 routes through the GeGLU merge "
+            "and the Gemma MLP classes; the GDN and CPU flags become no-ops."
+        ),
+    )
     parser.add_argument("--tokens", type=int, default=2048)
     parser.add_argument(
         "--ane-sequence-length",
@@ -310,6 +319,7 @@ def main() -> None:
 
     native_ext = inject_extension(args.extension) if args.extension else None
     from omlx.custom_kernels.qwen35_prefill import fast
+    from omlx.patches.gemma4_ane_prefill import enable_gemma4_ane_prefill
     from omlx.patches.qwen35_ane_prefill import enable_qwen35_ane_prefill
     from omlx.patches.qwen35_q4_mlp import (
         apply_qwen35_q4_lm_prefill_linear_patch,
@@ -344,42 +354,53 @@ def main() -> None:
         "prompt_tokens": args.tokens,
         "repeats": args.repeats,
     }
+    def _enable(*, fraction: float, gdn_fraction: float, dual: bool) -> int:
+        """Enable the hybrid path for the requested family.
+
+        Gemma 4 has no GDN stack and no CPU-shared GeGLU merge, so those
+        controls are silently inapplicable rather than an error -- the flags
+        stay on the parser so one command line drives both families.
+        """
+        if args.family == "gemma4":
+            return enable_gemma4_ane_prefill(
+                model,
+                sequence_length=ane_sequence_length,
+                fraction=fraction,
+                dual_ane=dual,
+            )
+        return enable_qwen35_ane_prefill(
+            model,
+            sequence_length=ane_sequence_length,
+            fraction=fraction,
+            gdn=not args.disable_gdn,
+            gdn_fraction=gdn_fraction,
+            dual_ane=dual,
+            cpu_fraction=args.cpu_fraction,
+            cpu_down_fraction=args.cpu_down_fraction,
+            ane_down_fraction=args.ane_down_fraction,
+            fused_down=args.ane_fused_down,
+            cpu_gdn_fraction=args.cpu_gdn_fraction,
+            cpu_threads=args.cpu_threads,
+            cpu_shared_resource=not args.disable_cpu_shared_resource,
+        )
+
+    results["family"] = args.family
     reference = None
     for mode in args.modes:
         if mode == "single":
             started = time.perf_counter()
-            mlp_layers = enable_qwen35_ane_prefill(
-                model,
-                sequence_length=ane_sequence_length,
+            mlp_layers = _enable(
                 fraction=args.single_mlp_fraction,
-                gdn=not args.disable_gdn,
                 gdn_fraction=args.single_gdn_fraction,
-                dual_ane=False,
-                cpu_fraction=args.cpu_fraction,
-                cpu_down_fraction=args.cpu_down_fraction,
-                ane_down_fraction=args.ane_down_fraction,
-                fused_down=args.ane_fused_down,
-                cpu_gdn_fraction=args.cpu_gdn_fraction,
-                cpu_threads=args.cpu_threads,
-                cpu_shared_resource=not args.disable_cpu_shared_resource,
+                dual=False,
             )
             compile_seconds = time.perf_counter() - started
         elif mode == "dual":
             started = time.perf_counter()
-            mlp_layers = enable_qwen35_ane_prefill(
-                model,
-                sequence_length=ane_sequence_length,
+            mlp_layers = _enable(
                 fraction=args.dual_mlp_fraction,
-                gdn=not args.disable_gdn,
                 gdn_fraction=args.dual_gdn_fraction,
-                dual_ane=True,
-                cpu_fraction=args.cpu_fraction,
-                cpu_down_fraction=args.cpu_down_fraction,
-                ane_down_fraction=args.ane_down_fraction,
-                fused_down=args.ane_fused_down,
-                cpu_gdn_fraction=args.cpu_gdn_fraction,
-                cpu_threads=args.cpu_threads,
-                cpu_shared_resource=not args.disable_cpu_shared_resource,
+                dual=True,
             )
             compile_seconds = time.perf_counter() - started
         else:

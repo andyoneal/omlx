@@ -124,6 +124,7 @@ private:
 bool qwen35_ane_available();
 bool qwen35_ane_hybrid_nax_enabled();
 bool qwen35_cpu_shared_resource_available();
+bool qwen35_ane_fused_geglu_available();
 void qwen35_ane_profile_set_enabled(bool enabled);
 void qwen35_ane_profile_reset();
 std::vector<double> qwen35_ane_profile_snapshot();
@@ -195,14 +196,15 @@ mlx::core::array qwen35_ane_q4_swiglu_t(
     const mlx::core::array &x, const mlx::core::array &gpu_weight,
     const mlx::core::array &gpu_scales, const mlx::core::array &gpu_biases,
     const std::shared_ptr<AneLinearModel> &ane_model, int variant = 8,
-    int group_size = 128, mlx::core::StreamOrDevice s = {});
+    int group_size = 128, bool geglu = false,
+    mlx::core::StreamOrDevice s = {});
 
 mlx::core::array qwen35_ane_affine_swiglu_t(
     const mlx::core::array &x, const mlx::core::array &gpu_weight,
     const mlx::core::array &gpu_scales, const mlx::core::array &gpu_biases,
     const std::shared_ptr<AneLinearModel> &ane_model, int bits,
     int variant = 8, int group_size = 128,
-    mlx::core::StreamOrDevice s = {});
+    bool geglu = false, mlx::core::StreamOrDevice s = {});
 
 mlx::core::array qwen35_ane_cpu_fp16_swiglu_t(
     const mlx::core::array &x, const mlx::core::array &cpu_weight,
@@ -253,7 +255,8 @@ mlx::core::array qwen35_ane_dual_q4_swiglu_t(
     const mlx::core::array &gpu_scales, const mlx::core::array &gpu_biases,
     const std::shared_ptr<AneLinearModel> &ane_model0,
     const std::shared_ptr<AneLinearModel> &ane_model1, int variant = 8,
-    int group_size = 128, mlx::core::StreamOrDevice s = {});
+    int group_size = 128, bool geglu = false,
+    mlx::core::StreamOrDevice s = {});
 
 mlx::core::array qwen35_ane_dual_affine_swiglu_t(
     const mlx::core::array &x, const mlx::core::array &gpu_weight,
@@ -261,7 +264,7 @@ mlx::core::array qwen35_ane_dual_affine_swiglu_t(
     const std::shared_ptr<AneLinearModel> &ane_model0,
     const std::shared_ptr<AneLinearModel> &ane_model1, int bits,
     int variant = 8, int group_size = 128,
-    mlx::core::StreamOrDevice s = {});
+    bool geglu = false, mlx::core::StreamOrDevice s = {});
 
 mlx::core::array qwen35_ane_dual_cpu_fp16_q4_swiglu_t(
     const mlx::core::array &x, const mlx::core::array &cpu_weight,
