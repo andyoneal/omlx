@@ -254,6 +254,16 @@ class ModelSettings:
             models larger than memory; costs decode speed). Requires reload.
         moe_expert_offload_resident_fraction: Fraction of each layer's experts
             kept resident (0 < f <= 1, default 0.25).
+        gemma4_ane_prefill_enabled: Enable private fixed-shape Gemma 4 ANE/GPU
+            prompt processing.
+        gemma4_ane_prefill_sequence_length: Exact flattened token count routed
+            through the eagerly compiled ANE programs.
+        gemma4_ane_prefill_tail_padding_min_tokens: Smallest residual tokenwise
+            projection block padded to the compiled ANE shape (zero disables).
+        gemma4_ane_prefill_fraction: Fraction of eligible MLP outputs assigned
+            across the ANE instances.
+        gemma4_ane_prefill_max_layers: Maximum eligible MLP layers accelerated.
+        gemma4_ane_prefill_dual_ane: Pin a procedure bank to each physical ANE.
         specprefill_enabled: Enable SpecPrefill (experimental sparse prefill for MoE).
         specprefill_draft_model: Path to draft model for SpecPrefill.
         specprefill_keep_pct: Keep rate for SpecPrefill (0.1–0.5).
@@ -402,6 +412,17 @@ class ModelSettings:
     # MoE expert offload (stream non-resident experts from the checkpoint)
     moe_expert_offload_enabled: bool = False
     moe_expert_offload_resident_fraction: float = 0.25  # 0 < fraction <= 1
+    # Experimental private-API ANE/GPU prefill for dense Gemma 4 MLPs. Off by
+    # default for the same reasons as the Qwen variant. The gate/up pair is
+    # merged with GeGLU; the down projection stays on the GPU because its
+    # 21504-wide contraction exceeds the ANE's declared 16384 contraction
+    # cap, which is identical on every architecture.
+    gemma4_ane_prefill_enabled: bool = False
+    gemma4_ane_prefill_sequence_length: int = 2048
+    gemma4_ane_prefill_tail_padding_min_tokens: int = 0
+    gemma4_ane_prefill_fraction: float = 0.50
+    gemma4_ane_prefill_max_layers: int = 60
+    gemma4_ane_prefill_dual_ane: bool = True
 
     # SpecPrefill (experimental: attention-based sparse prefill for MoE models)
     specprefill_enabled: bool = False

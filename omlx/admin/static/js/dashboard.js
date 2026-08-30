@@ -5,6 +5,8 @@
     const DSA_MODEL_TYPES = new Set([
         'deepseek_v32', 'glm_moe_dsa',
     ]);
+    const QWEN35_ANE_CONFIG_PREFIXES = ['qwen3_5', 'qwen3_6', 'qwen3_8'];
+    const GEMMA4_ANE_CONFIG_PREFIXES = ['gemma4'];
     const DIFFUSION_CONFIG_MODEL_TYPES = new Set([
         'diffusion_gemma',
     ]);
@@ -50,6 +52,12 @@
         'moe_expert_offload_resident_fraction',
         'qwen35_oq_a8_enabled',
         'qwen35_oq_a8_min_tokens',
+        'gemma4_ane_prefill_enabled',
+        'gemma4_ane_prefill_sequence_length',
+        'gemma4_ane_prefill_tail_padding_min_tokens',
+        'gemma4_ane_prefill_fraction',
+        'gemma4_ane_prefill_max_layers',
+        'gemma4_ane_prefill_dual_ane',
         'specprefill_enabled',
         'specprefill_draft_model',
         'specprefill_keep_pct',
@@ -258,6 +266,12 @@
                 moe_expert_offload_resident_fraction: 0.25,
                 qwen35_oq_a8_enabled: false,
                 qwen35_oq_a8_min_tokens: 128,
+                gemma4_ane_prefill_enabled: false,
+                gemma4_ane_prefill_sequence_length: 2048,
+                gemma4_ane_prefill_tail_padding_min_tokens: 0,
+                gemma4_ane_prefill_fraction: 0.5,
+                gemma4_ane_prefill_max_layers: 60,
+                gemma4_ane_prefill_dual_ane: true,
                 trust_remote_code: false,
             },
             savingModelSettings: false,
@@ -1698,6 +1712,20 @@
                 return DIFFUSION_CONFIG_MODEL_TYPES.has(modelType);
             },
 
+            isGemma4AnePrefillModel(model) {
+                const modelType = String(model?.config_model_type || '')
+                    .toLowerCase()
+                    .replace(/-/g, '_');
+                return GEMMA4_ANE_CONFIG_PREFIXES.some(prefix => modelType.startsWith(prefix));
+            },
+
+            isQwen35AnePrefillModel(model) {
+                const modelType = String(model?.config_model_type || '')
+                    .toLowerCase()
+                    .replace(/-/g, '_');
+                return QWEN35_ANE_CONFIG_PREFIXES.some(prefix => modelType.startsWith(prefix));
+            },
+
             isDiffusionUnsupportedProfileField(field) {
                 return DIFFUSION_UNSUPPORTED_PROFILE_FIELDS.has(field);
             },
@@ -1921,6 +1949,12 @@
                     qwen35_ane_prefill_cpu_gdn_fraction: s.qwen35_ane_prefill_cpu_gdn_fraction ?? 0,
                     qwen35_ane_prefill_cpu_threads: s.qwen35_ane_prefill_cpu_threads ?? 8,
                     qwen35_ane_prefill_cpu_shared_resource: s.qwen35_ane_prefill_cpu_shared_resource !== false,
+                    gemma4_ane_prefill_enabled: s.gemma4_ane_prefill_enabled || false,
+                    gemma4_ane_prefill_sequence_length: s.gemma4_ane_prefill_sequence_length || 2048,
+                    gemma4_ane_prefill_tail_padding_min_tokens: s.gemma4_ane_prefill_tail_padding_min_tokens ?? 0,
+                    gemma4_ane_prefill_fraction: s.gemma4_ane_prefill_fraction ?? 0.5,
+                    gemma4_ane_prefill_max_layers: s.gemma4_ane_prefill_max_layers || 60,
+                    gemma4_ane_prefill_dual_ane: s.gemma4_ane_prefill_dual_ane !== false,
                     specprefill_enabled: s.specprefill_enabled || false,
                     specprefill_draft_model: s.specprefill_draft_model || '',
                     specprefill_keep_pct: s.specprefill_keep_pct ? String(s.specprefill_keep_pct) : '0.2',
@@ -2951,6 +2985,14 @@
                                     ? Number(this.modelSettings.qwen35_ane_prefill_cpu_threads)
                                     : 8,
                                 qwen35_ane_prefill_cpu_shared_resource: !!this.modelSettings.qwen35_ane_prefill_cpu_shared_resource,
+                                gemma4_ane_prefill_enabled: !!this.modelSettings.gemma4_ane_prefill_enabled,
+                                gemma4_ane_prefill_sequence_length: Number(this.modelSettings.gemma4_ane_prefill_sequence_length) || 2048,
+                                gemma4_ane_prefill_tail_padding_min_tokens: Number.isFinite(Number(this.modelSettings.gemma4_ane_prefill_tail_padding_min_tokens))
+                                    ? Number(this.modelSettings.gemma4_ane_prefill_tail_padding_min_tokens)
+                                    : 0,
+                                gemma4_ane_prefill_fraction: Number(this.modelSettings.gemma4_ane_prefill_fraction) || 0.5,
+                                gemma4_ane_prefill_max_layers: Number(this.modelSettings.gemma4_ane_prefill_max_layers) || 60,
+                                gemma4_ane_prefill_dual_ane: !!this.modelSettings.gemma4_ane_prefill_dual_ane,
                                 specprefill_enabled: this.modelSettings.specprefill_enabled,
                                 specprefill_draft_model: this.modelSettings.specprefill_draft_model || null,
                                 specprefill_keep_pct: this.modelSettings.specprefill_enabled
@@ -3057,6 +3099,12 @@
                                     qwen35_ane_prefill_cpu_gdn_fraction: 0,
                                     qwen35_ane_prefill_cpu_threads: 8,
                                     qwen35_ane_prefill_cpu_shared_resource: true,
+                                    gemma4_ane_prefill_enabled: false,
+                                    gemma4_ane_prefill_sequence_length: 2048,
+                                    gemma4_ane_prefill_tail_padding_min_tokens: 0,
+                                    gemma4_ane_prefill_fraction: 0.5,
+                                    gemma4_ane_prefill_max_layers: 60,
+                                    gemma4_ane_prefill_dual_ane: true,
                                     specprefill_enabled: false,
                                     specprefill_draft_model: null,
                                     specprefill_keep_pct: null,
@@ -3319,6 +3367,12 @@
                         this.modelSettings.qwen35_ane_prefill_cpu_gdn_fraction = 0;
                         this.modelSettings.qwen35_ane_prefill_cpu_threads = 8;
                         this.modelSettings.qwen35_ane_prefill_cpu_shared_resource = true;
+                        this.modelSettings.gemma4_ane_prefill_enabled = false;
+                        this.modelSettings.gemma4_ane_prefill_sequence_length = 2048;
+                        this.modelSettings.gemma4_ane_prefill_tail_padding_min_tokens = 0;
+                        this.modelSettings.gemma4_ane_prefill_fraction = 0.5;
+                        this.modelSettings.gemma4_ane_prefill_max_layers = 60;
+                        this.modelSettings.gemma4_ane_prefill_dual_ane = true;
                         this.modelSettings.specprefill_enabled = false;
                         this.modelSettings.specprefill_draft_model = null;
                         this.modelSettings.specprefill_keep_pct = 0.2;

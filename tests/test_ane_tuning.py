@@ -1077,3 +1077,34 @@ async def test_cancelled_tuning_stays_active_until_unload_finishes(monkeypatch):
         await asyncio.wait_for(run.task, 5)
     assert run.status == "cancelled"
     assert ane_tuning.get_active_run() is None
+
+
+def test_fraction_grid_keeps_only_widths_that_fit_the_headroom(monkeypatch):
+    monkeypatch.setattr(ane_tuning, "_fraction_grid", ane_tuning._fraction_grid)
+    assert ane_tuning._fraction_grid(0.52) == [0.40, 0.45, 0.50]
+
+
+def test_fraction_grid_samples_below_a_ceiling_no_fixed_width_reaches():
+    """Otherwise the tuner reports one failure per width instead of tuning."""
+    grid = ane_tuning._fraction_grid(0.30)
+
+    assert grid
+    assert grid == sorted(grid)
+    assert max(grid) <= 0.30
+    assert min(grid) >= 0.05
+    assert not set(grid) & {0.40, 0.45, 0.50, 0.53, 0.60}
+
+
+def test_fraction_grid_without_a_ceiling_is_unchanged():
+    assert ane_tuning._fraction_grid() == ane_tuning._fraction_grid(None)
+
+
+def test_headroom_ceiling_is_none_when_memory_cannot_be_measured():
+    class _Patch:
+        _ANE_BANK_RETRY_MAX_MEMORY_FRACTION = 0.70
+
+        @staticmethod
+        def _ane_bank_memory_footprint_snapshot():
+            return 0, 0
+
+    assert ane_tuning._headroom_fraction_ceiling(_Patch, object(), 60) is None

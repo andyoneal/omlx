@@ -180,6 +180,9 @@ NB_MODULE(_ext, m) {
       "qwen35_cpu_shared_resource_available",
       &omlx::qwen35_prefill_kernels::qwen35_cpu_shared_resource_available);
   m.def(
+      "qwen35_ane_fused_geglu_available",
+      &omlx::qwen35_prefill_kernels::qwen35_ane_fused_geglu_available);
+  m.def(
       "qwen35_cpu_fp16_affine_qmm_t",
       &omlx::qwen35_prefill_kernels::qwen35_cpu_fp16_affine_qmm_t,
       "x"_a,
@@ -215,6 +218,7 @@ NB_MODULE(_ext, m) {
       "ane_model"_a,
       "variant"_a = 8,
       "group_size"_a = 128,
+      "geglu"_a = false,
       "stream"_a = nb::none());
   m.def(
       "qwen35_ane_affine_swiglu_t",
@@ -227,6 +231,7 @@ NB_MODULE(_ext, m) {
       "bits"_a,
       "variant"_a = 8,
       "group_size"_a = 128,
+      "geglu"_a = false,
       "stream"_a = nb::none());
   m.def("qwen35_ane_cpu_fp16_swiglu_t",
         &omlx::qwen35_prefill_kernels::qwen35_ane_cpu_fp16_swiglu_t, "x"_a,
@@ -298,6 +303,7 @@ NB_MODULE(_ext, m) {
       "ane_model1"_a,
       "variant"_a = 8,
       "group_size"_a = 128,
+      "geglu"_a = false,
       "stream"_a = nb::none());
   m.def(
       "qwen35_ane_dual_affine_swiglu_t",
@@ -311,6 +317,7 @@ NB_MODULE(_ext, m) {
       "bits"_a,
       "variant"_a = 8,
       "group_size"_a = 128,
+      "geglu"_a = false,
       "stream"_a = nb::none());
   m.def(
       "qwen35_ane_dual_cpu_fp16_q4_swiglu_t",

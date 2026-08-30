@@ -350,6 +350,13 @@ class ModelSettingsRequest(BaseModel):
     # MoE expert offload (stream non-resident experts from the checkpoint)
     moe_expert_offload_enabled: bool | None = None
     moe_expert_offload_resident_fraction: float | None = None
+    # Gemma 4 hybrid ANE prefill
+    gemma4_ane_prefill_enabled: bool | None = None
+    gemma4_ane_prefill_sequence_length: int | None = None
+    gemma4_ane_prefill_tail_padding_min_tokens: int | None = None
+    gemma4_ane_prefill_fraction: float | None = None
+    gemma4_ane_prefill_max_layers: int | None = None
+    gemma4_ane_prefill_dual_ane: bool | None = None
     # SpecPrefill (experimental)
     specprefill_enabled: bool | None = None
     specprefill_draft_model: str | None = None
@@ -3033,6 +3040,62 @@ async def update_model_settings(
                 detail="oQ A8 min tokens must be at least 1.",
             )
         current_settings.qwen35_oq_a8_min_tokens = int(value)
+    # Private Gemma 4 ANE/GPU fixed-shape prefill. Same load-time controls,
+    # minus the GDN, CPU and fused-down keys the family has no use for.
+    if "gemma4_ane_prefill_enabled" in sent:
+        enabled = bool(request.gemma4_ane_prefill_enabled)
+        config_type = str(getattr(entry, "config_model_type", "") or "")
+        config_type = config_type.lower().replace("-", "_")
+        if enabled and not config_type.startswith("gemma4"):
+            raise HTTPException(
+                status_code=400,
+                detail="Gemma 4 ANE prefill is available only for Gemma 4 models.",
+            )
+        current_settings.gemma4_ane_prefill_enabled = enabled
+    if "gemma4_ane_prefill_sequence_length" in sent:
+        value = request.gemma4_ane_prefill_sequence_length
+        if value is None or value < 1024 or value % 64:
+            raise HTTPException(
+                status_code=400,
+                detail="ANE prompt block must be a multiple of 64 and at least 1024.",
+            )
+        current_settings.gemma4_ane_prefill_sequence_length = int(value)
+        if (
+            current_settings.gemma4_ane_prefill_tail_padding_min_tokens
+            >= int(value)
+        ):
+            current_settings.gemma4_ane_prefill_tail_padding_min_tokens = 0
+    if "gemma4_ane_prefill_tail_padding_min_tokens" in sent:
+        value = request.gemma4_ane_prefill_tail_padding_min_tokens
+        sequence_length = int(current_settings.gemma4_ane_prefill_sequence_length)
+        if value is None or not 0 <= value < sequence_length:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "ANE tail padding threshold must be zero or less than the "
+                    "ANE prompt block."
+                ),
+            )
+        current_settings.gemma4_ane_prefill_tail_padding_min_tokens = int(value)
+    if "gemma4_ane_prefill_fraction" in sent:
+        value = request.gemma4_ane_prefill_fraction
+        if value is None or not 0.05 <= value <= 0.90:
+            raise HTTPException(
+                status_code=400,
+                detail="MLP ANE fraction must be between 0.05 and 0.90.",
+            )
+        current_settings.gemma4_ane_prefill_fraction = float(value)
+    if "gemma4_ane_prefill_max_layers" in sent:
+        value = request.gemma4_ane_prefill_max_layers
+        if value is None or value < 1:
+            raise HTTPException(
+                status_code=400, detail="ANE MLP layer limit must be positive."
+            )
+        current_settings.gemma4_ane_prefill_max_layers = int(value)
+    if "gemma4_ane_prefill_dual_ane" in sent:
+        current_settings.gemma4_ane_prefill_dual_ane = bool(
+            request.gemma4_ane_prefill_dual_ane
+        )
     budget_error = _ane_prefill_budget_error(
         current_settings.to_dict(), entry.config_model_type
     )
@@ -8265,6 +8328,19 @@ async def start_ane_tuning(
         )
 
     tuning_request.backend = "k2" if entry.config_model_type == "k2_horizon" else "qwen"
+    config_type = str(getattr(entry, "config_model_type", "") or "")
+    if config_type.lower().replace("-", "_").startswith("gemma4"):
+        # Gemma 4 has no GDN stack and no CPU-shared GeGLU merge. The existing
+        # capability flags collapse those phases to zero points, so this needs
+        # no tuner mechanism of its own.
+        tuning_request = tuning_request.model_copy(
+            update={
+                "allow_ane_gdn": False,
+                "allow_cpu_gdn": False,
+                "allow_cpu": False,
+            }
+        )
+
     cleanup_old_runs()
     run = create_run(tuning_request)
     run.task = asyncio.create_task(run_tuning(run, engine_pool))
