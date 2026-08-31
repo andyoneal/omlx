@@ -342,9 +342,9 @@ def configure_qwen35_ane_prefill_scheduler(
     sequence_length: int,
 ) -> bool:
     """Keep normal wide prompt chunks; projection backends tile internally."""
-    if sequence_length < 1024 or sequence_length % 64:
+    if sequence_length < 128 or sequence_length % 64:
         raise ValueError(
-            "ANE prefill sequence_length must be a multiple of 64 >= 1024"
+            "ANE prefill sequence_length must be a multiple of 64 >= 128"
         )
     config = getattr(scheduler, "config", None)
     if config is None:
@@ -3177,8 +3177,8 @@ def enable_qwen35_ane_prefill(
     behaviour, so this stays one runtime shared across families rather than a
     fork per family.
     """
-    if sequence_length < 1024 or sequence_length % 64:
-        raise ValueError("ANE prefill sequence_length must be a multiple of 64 >= 1024")
+    if sequence_length < 128 or sequence_length % 64:
+        raise ValueError("ANE prefill sequence_length must be a multiple of 64 >= 128")
     if not 0.05 <= fraction <= 0.90:
         raise ValueError("ANE prefill fraction must be between 0.05 and 0.90")
     if max_layers < 1:

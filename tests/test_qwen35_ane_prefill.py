@@ -2431,7 +2431,7 @@ def test_install_dispatch_wraps_outer_q4_mlp_dispatch(monkeypatch):
 
 @pytest.mark.parametrize(
     ("sequence_length", "fraction", "max_layers"),
-    [(512, 0.4, 1), (2048, 0.01, 1), (2048, 0.4, 0)],
+    [(64, 0.4, 1), (2048, 0.01, 1), (2048, 0.4, 0)],
 )
 def test_enable_rejects_unsafe_fixed_shape_settings(
     sequence_length, fraction, max_layers

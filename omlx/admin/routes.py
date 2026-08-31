@@ -2514,10 +2514,10 @@ async def update_model_settings(
         current_settings.qwen35_ane_prefill_enabled = enabled
     if "qwen35_ane_prefill_sequence_length" in sent:
         value = request.qwen35_ane_prefill_sequence_length
-        if value is None or value < 1024 or value % 64:
+        if value is None or value < 128 or value % 64:
             raise HTTPException(
                 status_code=400,
-                detail="ANE prompt block must be a multiple of 64 and at least 1024.",
+                detail="ANE prompt block must be a multiple of 64 and at least 128.",
             )
         current_settings.qwen35_ane_prefill_sequence_length = int(value)
         if (
@@ -2634,10 +2634,10 @@ async def update_model_settings(
         current_settings.gemma4_ane_prefill_enabled = enabled
     if "gemma4_ane_prefill_sequence_length" in sent:
         value = request.gemma4_ane_prefill_sequence_length
-        if value is None or value < 1024 or value % 64:
+        if value is None or value < 128 or value % 64:
             raise HTTPException(
                 status_code=400,
-                detail="ANE prompt block must be a multiple of 64 and at least 1024.",
+                detail="ANE prompt block must be a multiple of 64 and at least 128.",
             )
         current_settings.gemma4_ane_prefill_sequence_length = int(value)
         if (
