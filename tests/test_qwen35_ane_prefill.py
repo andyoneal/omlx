@@ -1213,6 +1213,115 @@ def test_enable_falls_back_to_per_layer_when_split_banks_fail(monkeypatch):
     assert model._omlx_ane_dual_prefill_count == 4
 
 
+def _fp16_scaled_mlp() -> "_MLP":
+    mlp = _MLP()
+    for linear in (mlp.gate_proj, mlp.up_proj, mlp.down_proj):
+        linear.scales = linear.scales.astype(mx.float16)
+        linear.biases = linear.biases.astype(mx.float16)
+    return mlp
+
+
+def _stub_compile_linear(monkeypatch):
+    monkeypatch.setattr(
+        fast,
+        "qwen35_ane_compile_linear",
+        lambda weight, sequence_length, *rest: (mx.eval(weight), object())[1],
+    )
+
+
+def test_compile_pair_binds_suffix_views_when_split_is_available(monkeypatch):
+    """The GPU suffix is bound as row-slice views of gate and up.
+
+    The packed layout has to retain a concatenated copy of both projections,
+    which costs (1 - fraction) of the layer's gate/up bytes for the lifetime of
+    the model. The originals cannot be freed instead, because decode falls back
+    to them.
+    """
+    mlp = _fp16_scaled_mlp()
+    _stub_compile_linear(monkeypatch)
+    monkeypatch.setattr(fast, "qwen35_ane_split_suffix_available", lambda: True)
+    monkeypatch.setattr(
+        fast, "has_symbol", lambda name: name == "qwen35_ane_q4_swiglu_split_t"
+    )
+
+    state = ane_patch._compile_pair(mlp, ane_patch._AnePrefillConfig(2048, 0.5, 8))
+
+    assert state is not None
+    assert state.up_weight is not None
+    assert state.up_scales is not None and state.up_biases is not None
+    # One projection per buffer, against the packed layout's two.
+    assert state.weight.shape[0] == state.gpu_outputs
+    assert state.up_weight.shape[0] == state.gpu_outputs
+    # The views alias the model's own weights rather than copying them.
+    assert mx.array_equal(state.weight, mlp.gate_proj.weight[-state.gpu_outputs :])
+    assert mx.array_equal(state.up_weight, mlp.up_proj.weight[-state.gpu_outputs :])
+
+
+def test_compile_pair_retains_no_suffix_copy_when_split_is_available(monkeypatch):
+    """Binding views must not allocate; the packed path is what costs memory."""
+    _stub_compile_linear(monkeypatch)
+    monkeypatch.setattr(fast, "qwen35_ane_split_suffix_available", lambda: True)
+
+    def retained(split: bool) -> float:
+        monkeypatch.setattr(
+            fast,
+            "has_symbol",
+            (lambda name: name == "qwen35_ane_q4_swiglu_split_t")
+            if split
+            else (lambda name: False),
+        )
+        mlp = _fp16_scaled_mlp()
+        mx.eval(mlp.gate_proj.weight, mlp.up_proj.weight)
+        mx.clear_cache()
+        before = mx.get_active_memory()
+        state = ane_patch._compile_pair(mlp, ane_patch._AnePrefillConfig(2048, 0.5, 8))
+        assert state is not None
+        mx.clear_cache()
+        return mx.get_active_memory() - before
+
+    assert retained(split=True) < retained(split=False)
+
+
+@pytest.mark.parametrize(
+    ("config_kwargs", "symbols"),
+    [
+        ({"dual_ane": True}, lambda name: True),
+        ({"cpu_fraction": 0.3}, lambda name: True),
+    ],
+)
+def test_compile_pair_keeps_packed_suffix_outside_the_split_path(
+    monkeypatch, config_kwargs, symbols
+):
+    """Dual ANE and CPU sharing have no split entry point, so they stay packed."""
+    mlp = _fp16_scaled_mlp()
+    _stub_compile_linear(monkeypatch)
+    monkeypatch.setattr(fast, "qwen35_ane_split_suffix_available", lambda: True)
+    monkeypatch.setattr(fast, "has_symbol", symbols)
+
+    state = ane_patch._compile_pair(
+        mlp, ane_patch._AnePrefillConfig(2048, 0.5, 8, **config_kwargs)
+    )
+
+    assert state is not None
+    assert state.up_weight is None
+    assert state.weight.shape[0] == 2 * state.gpu_outputs
+
+
+def test_split_suffix_is_refused_on_an_extension_without_the_gate(monkeypatch):
+    """A prebuilt bundle predating the split kernels keeps the packed layout."""
+    mlp = _fp16_scaled_mlp()
+    _stub_compile_linear(monkeypatch)
+    monkeypatch.setattr(fast, "qwen35_ane_split_suffix_available", None)
+    monkeypatch.setattr(
+        fast, "has_symbol", lambda name: name == "qwen35_ane_q4_swiglu_split_t"
+    )
+
+    state = ane_patch._compile_pair(mlp, ane_patch._AnePrefillConfig(2048, 0.5, 8))
+
+    assert state is not None
+    assert state.up_weight is None
+
+
 def test_compile_pair_builds_one_combined_ane_program(monkeypatch):
     mlp = _MLP()
     for linear in (mlp.gate_proj, mlp.up_proj, mlp.down_proj):

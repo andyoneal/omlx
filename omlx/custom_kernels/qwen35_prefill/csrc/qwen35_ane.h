@@ -125,6 +125,7 @@ bool qwen35_ane_available();
 bool qwen35_ane_hybrid_nax_enabled();
 bool qwen35_cpu_shared_resource_available();
 bool qwen35_ane_fused_geglu_available();
+bool qwen35_ane_split_suffix_available();
 void qwen35_ane_profile_set_enabled(bool enabled);
 void qwen35_ane_profile_reset();
 std::vector<double> qwen35_ane_profile_snapshot();
@@ -197,6 +198,26 @@ mlx::core::array qwen35_ane_q4_swiglu_t(
     const mlx::core::array &gpu_scales, const mlx::core::array &gpu_biases,
     const std::shared_ptr<AneLinearModel> &ane_model, int variant = 8,
     int group_size = 128, bool geglu = false,
+    mlx::core::StreamOrDevice s = {});
+
+// Split-suffix GLU: the GPU half arrives as row-slice views of the model's own
+// gate and up weights rather than one retained concatenated copy of both.
+mlx::core::array qwen35_ane_affine_swiglu_split_t(
+    const mlx::core::array &x, const mlx::core::array &gate_weight,
+    const mlx::core::array &gate_scales, const mlx::core::array &gate_biases,
+    const mlx::core::array &up_weight, const mlx::core::array &up_scales,
+    const mlx::core::array &up_biases,
+    const std::shared_ptr<AneLinearModel> &ane_model, int bits, int variant,
+    int group_size, bool geglu = false,
+    mlx::core::StreamOrDevice s = {});
+
+mlx::core::array qwen35_ane_q4_swiglu_split_t(
+    const mlx::core::array &x, const mlx::core::array &gate_weight,
+    const mlx::core::array &gate_scales, const mlx::core::array &gate_biases,
+    const mlx::core::array &up_weight, const mlx::core::array &up_scales,
+    const mlx::core::array &up_biases,
+    const std::shared_ptr<AneLinearModel> &ane_model, int variant,
+    int group_size, bool geglu = false,
     mlx::core::StreamOrDevice s = {});
 
 mlx::core::array qwen35_ane_affine_swiglu_t(

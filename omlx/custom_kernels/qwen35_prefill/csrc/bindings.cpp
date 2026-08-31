@@ -183,6 +183,9 @@ NB_MODULE(_ext, m) {
       "qwen35_ane_fused_geglu_available",
       &omlx::qwen35_prefill_kernels::qwen35_ane_fused_geglu_available);
   m.def(
+      "qwen35_ane_split_suffix_available",
+      &omlx::qwen35_prefill_kernels::qwen35_ane_split_suffix_available);
+  m.def(
       "qwen35_cpu_fp16_affine_qmm_t",
       &omlx::qwen35_prefill_kernels::qwen35_cpu_fp16_affine_qmm_t,
       "x"_a,
@@ -227,6 +230,37 @@ NB_MODULE(_ext, m) {
       "gpu_weight"_a,
       "gpu_scales"_a,
       "gpu_biases"_a,
+      "ane_model"_a,
+      "bits"_a,
+      "variant"_a = 8,
+      "group_size"_a = 128,
+      "geglu"_a = false,
+      "stream"_a = nb::none());
+  m.def(
+      "qwen35_ane_q4_swiglu_split_t",
+      &omlx::qwen35_prefill_kernels::qwen35_ane_q4_swiglu_split_t,
+      "x"_a,
+      "gate_weight"_a,
+      "gate_scales"_a,
+      "gate_biases"_a,
+      "up_weight"_a,
+      "up_scales"_a,
+      "up_biases"_a,
+      "ane_model"_a,
+      "variant"_a = 8,
+      "group_size"_a = 128,
+      "geglu"_a = false,
+      "stream"_a = nb::none());
+  m.def(
+      "qwen35_ane_affine_swiglu_split_t",
+      &omlx::qwen35_prefill_kernels::qwen35_ane_affine_swiglu_split_t,
+      "x"_a,
+      "gate_weight"_a,
+      "gate_scales"_a,
+      "gate_biases"_a,
+      "up_weight"_a,
+      "up_scales"_a,
+      "up_biases"_a,
       "ane_model"_a,
       "bits"_a,
       "variant"_a = 8,
