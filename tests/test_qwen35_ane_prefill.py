@@ -735,17 +735,21 @@ def test_enable_accepts_widths_on_the_32_element_boundary(monkeypatch):
         ) == 2
 
     # Off the boundary the program compiles and then fails at execution, so it
-    # has to be refused here rather than left to the engine.
-    for width in (2000, 112, 100):
+    # has to be refused here rather than left to the engine. All three are above
+    # the floor, so the alignment rule is what they can fail.
+    for width in (176, 208, 2000):
         with pytest.raises(ValueError, match="multiple of 32"):
             ane_patch.enable_qwen35_ane_prefill(
                 _Model(2), sequence_length=width, fraction=0.4, max_layers=2
             )
 
-    # The floor is unchanged, and it is not a limit on T: at small T the
-    # compiler puts the fused output width on W, which caps at 16384 through
-    # M3, so whether 64 compiles follows the fraction rather than the width.
-    with pytest.raises(ValueError, match="multiple of 32"):
+    # 64 is on the boundary, so what refuses it is the floor -- asserted on the
+    # floor's own message, because a match on the alignment text would pass
+    # whichever condition fired. The floor is not a limit on T either: at small
+    # T the compiler puts the fused output width on W, which caps at 16384
+    # through M3, so whether 64 compiles follows the offload fraction.
+    assert 64 % 32 == 0
+    with pytest.raises(ValueError, match="at least 128"):
         ane_patch.enable_qwen35_ane_prefill(
             _Model(2), sequence_length=64, fraction=0.4, max_layers=2
         )

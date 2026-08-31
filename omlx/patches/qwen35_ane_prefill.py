@@ -382,13 +382,14 @@ def configure_qwen35_ane_prefill_scheduler(
 ) -> bool:
     """Keep normal wide prompt chunks; projection backends tile internally."""
     # 32, not 64 -- see enable_qwen35_ane_prefill for the measurement.
-    if (
-        sequence_length < _ANE_MIN_SEQUENCE_LENGTH
-        or sequence_length % _ANE_SEQUENCE_LENGTH_ALIGNMENT
-    ):
+    if sequence_length < _ANE_MIN_SEQUENCE_LENGTH:
+        raise ValueError(
+            f"ANE prefill sequence_length must be at least {_ANE_MIN_SEQUENCE_LENGTH}"
+        )
+    if sequence_length % _ANE_SEQUENCE_LENGTH_ALIGNMENT:
         raise ValueError(
             "ANE prefill sequence_length must be a multiple of "
-            f"{_ANE_SEQUENCE_LENGTH_ALIGNMENT} >= {_ANE_MIN_SEQUENCE_LENGTH}"
+            f"{_ANE_SEQUENCE_LENGTH_ALIGNMENT}"
         )
     config = getattr(scheduler, "config", None)
     if config is None:
@@ -3283,13 +3284,14 @@ def enable_qwen35_ane_prefill(
     # fraction 0.62 that width is 18944 and T <= 64 is refused, at 0.40 it is
     # 12288 and T = 32 compiles. Kept a constant because the real condition
     # follows the fraction, and a dispatch that small is overhead-bound anyway.
-    if (
-        sequence_length < _ANE_MIN_SEQUENCE_LENGTH
-        or sequence_length % _ANE_SEQUENCE_LENGTH_ALIGNMENT
-    ):
+    if sequence_length < _ANE_MIN_SEQUENCE_LENGTH:
+        raise ValueError(
+            f"ANE prefill sequence_length must be at least {_ANE_MIN_SEQUENCE_LENGTH}"
+        )
+    if sequence_length % _ANE_SEQUENCE_LENGTH_ALIGNMENT:
         raise ValueError(
             "ANE prefill sequence_length must be a multiple of "
-            f"{_ANE_SEQUENCE_LENGTH_ALIGNMENT} >= {_ANE_MIN_SEQUENCE_LENGTH}"
+            f"{_ANE_SEQUENCE_LENGTH_ALIGNMENT}"
         )
     if not 0.05 <= fraction <= 0.90:
         raise ValueError("ANE prefill fraction must be between 0.05 and 0.90")

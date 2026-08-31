@@ -3054,10 +3054,15 @@ async def update_model_settings(
         current_settings.gemma4_ane_prefill_enabled = enabled
     if "gemma4_ane_prefill_sequence_length" in sent:
         value = request.gemma4_ane_prefill_sequence_length
-        if value is None or value < 128 or value % 32:
+        if value is None or value < 128:
             raise HTTPException(
                 status_code=400,
-                detail="ANE prompt block must be a multiple of 32 and at least 128.",
+                detail="ANE prompt block must be at least 128.",
+            )
+        if value % 32:
+            raise HTTPException(
+                status_code=400,
+                detail="ANE prompt block must be a multiple of 32.",
             )
         current_settings.gemma4_ane_prefill_sequence_length = int(value)
         if (

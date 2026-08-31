@@ -88,11 +88,13 @@ def validate_ane_prefill(settings: dict, model_type: str | None) -> None:
     if settings.get("qwen35_ane_prefill_enabled") and backend is None:
         raise ValueError("ANE prefill is unavailable for this model.")
     width = settings.get("qwen35_ane_prefill_sequence_length", 2048)
+    # The alignment is 32 fp16 elements, a 64-byte W offset, so 160 compiles
+    # and matches the GPU; one message per rule names the one that failed.
     minimum, alignment = (32, 32) if backend == "k2" else (128, 32)
-    if type(width) is not int or width < minimum or width % alignment:
-        raise ValueError(
-            f"ANE prompt block must be a multiple of {alignment} and at least {minimum}."
-        )
+    if type(width) is not int or width < minimum:
+        raise ValueError(f"ANE prompt block must be at least {minimum}.")
+    if width % alignment:
+        raise ValueError(f"ANE prompt block must be a multiple of {alignment}.")
     fraction = ane_prefill_fraction(
         settings.get("qwen35_ane_prefill_fraction"), model_type
     )
