@@ -291,6 +291,31 @@ async def test_qwen_ane_prefill_accepts_a_multiple_of_32():
 
 
 @pytest.mark.asyncio
+async def test_qwen_ane_prefill_reports_the_floor_separately_from_alignment():
+    """One message per rule, so the operator knows which one to fix.
+
+    96 is correctly aligned and only fails the floor; 176 clears the floor and
+    only fails the alignment.
+    """
+    pool, entry = _failed_pool()
+    entry.config_model_type = "qwen3_5"
+
+    with pytest.raises(admin_routes.HTTPException, match="at least 128"):
+        await _update_settings(
+            pool,
+            ModelSettings(),
+            admin_routes.ModelSettingsRequest(qwen35_ane_prefill_sequence_length=96),
+        )
+
+    with pytest.raises(admin_routes.HTTPException, match="multiple of 32"):
+        await _update_settings(
+            pool,
+            ModelSettings(),
+            admin_routes.ModelSettingsRequest(qwen35_ane_prefill_sequence_length=176),
+        )
+
+
+@pytest.mark.asyncio
 async def test_gemma4_ane_prefill_accepts_a_multiple_of_32():
     pool, entry = _failed_pool()
     entry.config_model_type = "gemma4"
