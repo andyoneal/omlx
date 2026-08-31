@@ -2808,7 +2808,7 @@
 
                 const sequenceLength = Number(this.modelSettings.qwen35_ane_prefill_sequence_length);
                 let error = integer(sequenceLength, window.t('js.error.field.ane_prompt_block'), 128);
-                if (!error && sequenceLength % 64 !== 0) {
+                if (!error && sequenceLength % 32 !== 0) {
                     error = window.t('js.error.ane_prompt_block_multiple');
                 }
                 if (error) return error;

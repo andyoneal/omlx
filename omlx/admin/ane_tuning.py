@@ -59,8 +59,8 @@ class ANETuningRequest(BaseModel):
     @field_validator("sequence_length")
     @classmethod
     def validate_sequence_length(cls, value: int) -> int:
-        if value < 1024 or value % 64:
-            raise ValueError("sequence_length must be a multiple of 64 >= 1024")
+        if value < 1024 or value % 32:
+            raise ValueError("sequence_length must be a multiple of 32 >= 1024")
         return value
 
     @field_validator("repeats")
