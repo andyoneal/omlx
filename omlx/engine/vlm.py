@@ -2613,7 +2613,7 @@ class VLMBatchedEngine(BaseEngine):
                     getattr(
                         self._model_settings,
                         "gemma4_ane_prefill_sequence_length",
-                        2048,
+                        128,
                     )
                 )
 
