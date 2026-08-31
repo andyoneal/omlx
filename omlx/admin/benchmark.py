@@ -1931,7 +1931,7 @@ async def run_benchmark(run: BenchmarkRun, engine_pool: Any) -> None:
                     getattr(
                         model_settings,
                         "gemma4_ane_prefill_sequence_length",
-                        2048,
+                        128,
                     )
                 ),
                 "mlp_layers": int(

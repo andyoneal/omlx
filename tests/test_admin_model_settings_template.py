@@ -220,7 +220,8 @@ def test_qwen_ane_numeric_controls_accept_arbitrary_valid_values():
         assert before.rsplit("<", 1)[-1].startswith("input ")
         assert "</select>" not in after.split(">", 1)[0]
 
-    assert 'min="128" step="64"' in section
+    # Steps in 32s, matching the alignment rule the validators enforce.
+    assert 'min="128" step="32"' in section
     assert 'min="0" max="64" step="1"' in section
 
 

@@ -949,7 +949,7 @@ class EnginePool:
         if gemma4_ane_active:
             add(
                 "gemma4_ane_prefill_sequence_length",
-                data.get("gemma4_ane_prefill_sequence_length", 2048),
+                data.get("gemma4_ane_prefill_sequence_length", 128),
             )
             add(
                 "gemma4_ane_prefill_tail_padding_min_tokens",

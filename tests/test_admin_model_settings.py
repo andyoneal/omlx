@@ -394,6 +394,24 @@ async def test_qwen_ane_prefill_accepts_a_multiple_of_32():
     assert settings.qwen35_ane_prefill_sequence_length == 160
 
 
+def test_gemma4_ane_default_width_fits_the_activation_tile():
+    """The shipped default has to land in the packed regime on every variant.
+
+    Above the ANE's ~983040-element activation tile the compiler expands the
+    INT8 constants to dense fp16, which is the cost this feature exists to
+    avoid, so a default over the tile spends the whole thing. 31B is the
+    binding variant on a 5376 model dim, which caps the width at 182.
+    Asserted as the rule rather than the literal: raising the default to 12B's
+    faster 256 fails here, and should.
+    """
+    width = ModelSettings().gemma4_ane_prefill_sequence_length
+
+    assert width >= 128
+    assert width % 32 == 0
+    for name, model_dim in (("12B", 3840), ("31B", 5376), ("26B-A4B", 2816)):
+        assert width * model_dim <= 983040, name
+
+
 @pytest.mark.asyncio
 async def test_qwen_ane_prefill_reports_the_floor_separately_from_alignment():
     """One message per rule, so the operator knows which one to fix.

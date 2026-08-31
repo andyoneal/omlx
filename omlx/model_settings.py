@@ -259,7 +259,8 @@ class ModelSettings:
         gemma4_ane_prefill_enabled: Enable private fixed-shape Gemma 4 ANE/GPU
             prompt processing.
         gemma4_ane_prefill_sequence_length: Exact flattened token count routed
-            through the eagerly compiled ANE programs.
+            through the eagerly compiled ANE programs. A multiple of 32, at
+            least 128.
         gemma4_ane_prefill_tail_padding_min_tokens: Smallest residual tokenwise
             projection block padded to the compiled ANE shape (zero disables).
         gemma4_ane_prefill_fraction: Fraction of eligible MLP outputs assigned
@@ -421,7 +422,16 @@ class ModelSettings:
     # axis through M3. M4 raises the cap to 65536, so the split is a constraint
     # of the current target rather than a permanent one.
     gemma4_ane_prefill_enabled: bool = False
-    gemma4_ane_prefill_sequence_length: int = 2048
+    # Past the ANE's ~983040-element activation tile the engine re-reads the
+    # weight once per 128 rows of activation, so DRAM traffic climbs as T/128 --
+    # measured at 17x the int8 bytes at T = 2048, against 1.03x at 256. The old
+    # 2048 default therefore streamed nothing compressed and held ~4.5 GB of
+    # input/output surfaces across 48 layers. Only 128 and 160 stay inside the
+    # tile on every Gemma 4 variant, since 31B caps the width at 182 on a 5376
+    # model dim, and 128 measures faster and cooler per token than 160 at every
+    # repeat. 12B alone does best at 256, so tune per model rather than reading
+    # this as an optimum.
+    gemma4_ane_prefill_sequence_length: int = 128
     gemma4_ane_prefill_tail_padding_min_tokens: int = 0
     gemma4_ane_prefill_fraction: float = 0.50
     gemma4_ane_prefill_max_layers: int = 60
