@@ -39,9 +39,26 @@ def test_each_activation_is_written_exactly_once():
     assert metal.count(_SWIGLU_EXPR) == 1
     assert metal.count("0.7978845608028654f") == 1
     # Every activation site goes through the functor template parameter.
-    assert metal.count("Act()(gate, up)") == 5
+    assert metal.count("Act()(gate, up)") == 6
     assert metal.count("struct SwiGlu {") == 1
     assert metal.count("struct GeGlu {") == 1
+
+
+def test_split_merge_reads_gate_and_up_from_separate_buffers():
+    """The split merge indexes two suffix buffers at one projection's stride."""
+    metal = _metal()
+    body = metal.split("void qwen35_ane_merge_glu_split_output(", 1)[1].split(
+        "\n}", 1
+    )[0]
+    assert "gpu_gate[base + suffix]" in body
+    assert "gpu_up[base + suffix]" in body
+    # One projection per buffer, so the row stride is gpu_hidden, where the
+    # packed merge strides by 2 * gpu_hidden over both halves.
+    assert "m * static_cast<uint>(gpu_hidden)" in body
+    packed = metal.split("void qwen35_ane_merge_glu_output(", 1)[1].split("\n}", 1)[0]
+    assert "m * static_cast<uint>(2 * gpu_hidden)" in packed
+    # The activation still goes through the shared functor.
+    assert "Act()(gate, up)" in body
 
 
 def test_geglu_functor_is_the_canonical_tanh_gelu():
@@ -52,16 +69,17 @@ def test_geglu_functor_is_the_canonical_tanh_gelu():
     assert "up * 0.5f * gate * (1.0f + tanh(inner))" in body
 
 
-def test_only_the_two_non_cpu_merges_are_instantiated_for_geglu():
+def test_only_non_cpu_merges_are_instantiated_for_geglu():
     """CPU sharing and fused-down stay SwiGLU-only, with no dead kernels."""
     metal = _metal()
     for name in (
         "qwen35_ane_merge_geglu_output_",
         "qwen35_ane_merge_dual_geglu_output_",
+        "qwen35_ane_merge_geglu_split_output_",
     ):
         assert f'instantiate_kernel("{name}" #type' in metal
     assert "GeGlu)" in metal
-    assert metal.count("GeGlu)") == 2
+    assert metal.count("GeGlu)") == 3
     # The three out-of-scope kernels take the parameter but stay SwiGLU.
     for template in (
         "qwen35_ane_merge_dual_cpu_glu_output, type, SwiGlu)",

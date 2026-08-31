@@ -2260,13 +2260,14 @@ public:
                        bool fuse_swiglu = false, int profile_category = -1,
                        bool cpu_fp16 = false, int cpu_threads = 0,
                        bool cpu_shared_resource = false,
-                       bool geglu = false)
+                       bool geglu = false, bool split_suffix = false)
       : Primitive(stream), model_(std::move(model)), variant_(variant),
         bits_(bits), group_size_(group_size), fuse_swiglu_(fuse_swiglu),
         profile_category_(profile_category >= 0 ? profile_category
                                                 : (fuse_swiglu ? 0 : 1)),
         cpu_fp16_(cpu_fp16), cpu_threads_(cpu_threads),
-        cpu_shared_resource_(cpu_shared_resource), geglu_(geglu) {}
+        cpu_shared_resource_(cpu_shared_resource), geglu_(geglu),
+        split_suffix_(split_suffix) {}
 
   void eval_cpu(const std::vector<array> &, std::vector<array> &) override {
     throw std::runtime_error("ANE hybrid qmm has no CPU implementation.");
@@ -2281,12 +2282,21 @@ public:
     const auto &weight = inputs[1];
     const auto &scales = inputs[2];
     const auto &biases = inputs[3];
+    // In split mode the GPU suffix arrives as two row-slice views of the
+    // model's own gate and up weights rather than one concatenated copy, so
+    // the operand list carries gate at 1..3 and up at 4..6.
+    const array *up_weight = split_suffix_ ? &inputs[4] : nullptr;
+    const array *up_scales = split_suffix_ ? &inputs[5] : nullptr;
+    const array *up_biases = split_suffix_ ? &inputs[6] : nullptr;
     const array *cpu_weight = cpu_fp16_ ? &inputs[4] : nullptr;
     auto &output = outputs[0];
 
     const int K = static_cast<int>(x.shape(-1));
     const int M = static_cast<int>(x.size() / K);
-    const int gpu_n = static_cast<int>(weight.shape(0));
+    // Each split buffer holds one projection; the packed layout holds both, so
+    // gpu_n stays the combined width the merge arithmetic below expects.
+    const int gpu_half = static_cast<int>(weight.shape(0));
+    const int gpu_n = split_suffix_ ? 2 * gpu_half : gpu_half;
     const int ane_n = model_->output_dim();
     const int cpu_n = cpu_weight ? static_cast<int>(cpu_weight->shape(0)) : 0;
     const bool profiling = ane_profile_enabled();
@@ -2302,8 +2312,15 @@ public:
       }
     }
     output.set_data(allocator::malloc(output.nbytes()));
-    array gpu_output({M, gpu_n}, x.dtype(), nullptr, {});
+    array gpu_output({M, split_suffix_ ? gpu_half : gpu_n}, x.dtype(), nullptr,
+                     {});
     gpu_output.set_data(allocator::malloc(gpu_output.nbytes()));
+    std::unique_ptr<array> gpu_output_up;
+    if (split_suffix_) {
+      gpu_output_up = std::make_unique<array>(Shape{M, gpu_half}, x.dtype(),
+                                              nullptr, std::vector<array>{});
+      gpu_output_up->set_data(allocator::malloc(gpu_output_up->nbytes()));
+    }
     std::unique_ptr<array> cpu_input;
     std::unique_ptr<array> cpu_output;
     if (cpu_weight) {
@@ -2397,11 +2414,26 @@ public:
     encoder.set_input_array(biases, 2);
     encoder.set_input_array(x, 3);
     encoder.set_output_array(gpu_output, 4);
+    const int qmm_n = split_suffix_ ? gpu_half : gpu_n;
     encoder.set_bytes(K, 5);
-    encoder.set_bytes(gpu_n, 6);
+    encoder.set_bytes(qmm_n, 6);
     encoder.set_bytes(M, 7);
     encoder.dispatch_threadgroups(
-        MTL::Size((gpu_n + 63) / 64, (M + 63) / 64, 1), MTL::Size(32, 2, 2));
+        MTL::Size((qmm_n + 63) / 64, (M + 63) / 64, 1), MTL::Size(32, 2, 2));
+    if (split_suffix_) {
+      // Same kernel, same encoder, second projection. One extra dispatch buys
+      // back the concatenated weight copy the packed layout has to retain.
+      encoder.set_input_array(*up_weight, 0);
+      encoder.set_input_array(*up_scales, 1);
+      encoder.set_input_array(*up_biases, 2);
+      encoder.set_input_array(x, 3);
+      encoder.set_output_array(*gpu_output_up, 4);
+      encoder.set_bytes(K, 5);
+      encoder.set_bytes(qmm_n, 6);
+      encoder.set_bytes(M, 7);
+      encoder.dispatch_threadgroups(
+          MTL::Size((qmm_n + 63) / 64, (M + 63) / 64, 1), MTL::Size(32, 2, 2));
+    }
     encoder.end_encoding();
     const uint64_t launch = profiling ? profile_now_ns() : 0;
     id<MTLCommandBuffer> qmm_buffer =
@@ -2492,21 +2524,31 @@ public:
       }
     }
 
-    auto merge = device.get_kernel(
-        std::string(cpu_weight
-                        ? (fuse_swiglu_ ? "qwen35_ane_merge_cpu_swiglu_output_"
-                                        : "qwen35_ane_merge_cpu_output_")
-                        : (fuse_swiglu_
-                               ? (geglu_ ? "qwen35_ane_merge_geglu_output_"
-                                         : "qwen35_ane_merge_swiglu_output_")
-                               : "qwen35_ane_merge_output_")) +
-            metal_type_name(x.dtype()),
-        library);
+    std::string merge_name;
+    if (cpu_weight) {
+      merge_name = fuse_swiglu_ ? "qwen35_ane_merge_cpu_swiglu_output_"
+                                : "qwen35_ane_merge_cpu_output_";
+    } else if (!fuse_swiglu_) {
+      merge_name = "qwen35_ane_merge_output_";
+    } else if (split_suffix_) {
+      merge_name = geglu_ ? "qwen35_ane_merge_geglu_split_output_"
+                          : "qwen35_ane_merge_swiglu_split_output_";
+    } else {
+      merge_name = geglu_ ? "qwen35_ane_merge_geglu_output_"
+                          : "qwen35_ane_merge_swiglu_output_";
+    }
+    auto merge =
+        device.get_kernel(merge_name + metal_type_name(x.dtype()), library);
     encoder.set_compute_pipeline_state(merge);
     encoder.set_buffer(model_->output_buffer(), 0);
     if (cpu_weight) {
       encoder.set_input_array(*cpu_output, 1);
       encoder.set_input_array(gpu_output, 2);
+      encoder.set_output_array(output, 3);
+      encoder.set_bytes(M, 4);
+    } else if (split_suffix_) {
+      encoder.set_input_array(gpu_output, 1);
+      encoder.set_input_array(*gpu_output_up, 2);
       encoder.set_output_array(output, 3);
       encoder.set_bytes(M, 4);
     } else {
@@ -2523,6 +2565,9 @@ public:
       encoder.set_bytes(merge_ane_n, 5);
       encoder.set_bytes(merge_cpu_n, 6);
       encoder.set_bytes(merge_gpu_n, 7);
+    } else if (split_suffix_) {
+      encoder.set_bytes(merge_ane_n, 5);
+      encoder.set_bytes(merge_gpu_n, 6);
     } else {
       encoder.set_bytes(merge_ane_n, 4);
       encoder.set_bytes(merge_gpu_n, 5);
@@ -2543,6 +2588,9 @@ public:
       }
     }
     encoder.add_temporary(std::move(gpu_output));
+    if (gpu_output_up) {
+      encoder.add_temporary(std::move(*gpu_output_up));
+    }
     if (cpu_input) {
       encoder.add_temporary(std::move(*cpu_input));
     }
@@ -2560,13 +2608,14 @@ public:
            fuse_swiglu_ == rhs.fuse_swiglu_ && geglu_ == rhs.geglu_ &&
            profile_category_ == rhs.profile_category_ &&
            cpu_fp16_ == rhs.cpu_fp16_ && cpu_threads_ == rhs.cpu_threads_ &&
-           cpu_shared_resource_ == rhs.cpu_shared_resource_;
+           cpu_shared_resource_ == rhs.cpu_shared_resource_ &&
+           split_suffix_ == rhs.split_suffix_;
   }
   auto state() const {
     return std::make_tuple(reinterpret_cast<uintptr_t>(model_.get()), bits_,
                            variant_, group_size_, fuse_swiglu_, geglu_,
                            profile_category_, cpu_fp16_, cpu_threads_,
-                           cpu_shared_resource_);
+                           cpu_shared_resource_, split_suffix_);
   }
 
 private:
@@ -2580,6 +2629,7 @@ private:
   bool cpu_fp16_;
   int cpu_threads_;
   bool cpu_shared_resource_;
+  bool split_suffix_;
 };
 
 class DualAneHybridPrimitive : public Primitive {
@@ -3270,6 +3320,10 @@ bool qwen35_cpu_shared_resource_available() {
 
 bool qwen35_ane_fused_geglu_available() { return true; }
 
+// Reports the split-suffix GLU path, which binds row-slice views of the
+// model's own gate and up weights instead of a retained concatenated copy.
+bool qwen35_ane_split_suffix_available() { return true; }
+
 array qwen35_cpu_fp16_affine_qmm_t(
     const array &x, const array &cpu_weight, const array &gpu_weight,
     const array &gpu_scales, const array &gpu_biases, int bits, int variant,
@@ -3434,6 +3488,68 @@ array qwen35_ane_affine_swiglu_t(
                    /* cpu_fp16 */ false, /* cpu_threads */ 0,
                    /* cpu_shared_resource */ false, geglu),
                std::vector<array>{x, gpu_weight, gpu_scales, gpu_biases});
+}
+
+array qwen35_ane_affine_swiglu_split_t(
+    const array &x, const array &gate_weight, const array &gate_scales,
+    const array &gate_biases, const array &up_weight, const array &up_scales,
+    const array &up_biases, const std::shared_ptr<AneLinearModel> &ane_model,
+    int bits, int variant, int group_size, bool geglu, StreamOrDevice s) {
+  auto stream = to_stream(s);
+  auto suffix_ok = [&](const array &w, const array &sc, const array &b) {
+    return w.dtype() == mlx::core::uint32 && sc.dtype() == x.dtype() &&
+           b.dtype() == x.dtype() && w.ndim() == 2 && sc.ndim() == 2 &&
+           b.shape() == sc.shape() && row_contiguous(w) && row_contiguous(sc) &&
+           row_contiguous(b);
+  };
+  if (!ane_model || stream.device == Device::cpu ||
+      (x.dtype() != float16 && x.dtype() != bfloat16) || x.ndim() < 2 ||
+      !row_contiguous(x) ||
+      !suffix_ok(gate_weight, gate_scales, gate_biases) ||
+      !suffix_ok(up_weight, up_scales, up_biases) ||
+      gate_weight.shape() != up_weight.shape() ||
+      gate_scales.shape() != up_scales.shape() ||
+      (bits != 4 && bits != 5 && bits != 6 && bits != 8) ||
+      (group_size != 64 && group_size != 128) || variant != 8) {
+    throw std::invalid_argument(
+        "Unsupported ANE hybrid split affine SwiGLU configuration.");
+  }
+  const int K = static_cast<int>(x.shape(-1));
+  const int M = static_cast<int>(x.size() / K);
+  // Each buffer carries one projection, so the packed path's combined suffix
+  // width is twice this and its multiple-of-128 rule becomes 64 per half.
+  const int gpu_half = static_cast<int>(gate_weight.shape(0));
+  const int gpu_n = 2 * gpu_half;
+  const int ane_n = ane_model->output_dim();
+  if (K != ane_model->input_dim() || M != ane_model->sequence_length() ||
+      ane_n <= 0 || ane_n % 2 != 0 || gpu_half <= 0 || gpu_half % 64 != 0 ||
+      K % group_size != 0 || gate_weight.shape(1) * 32 != K * bits ||
+      gate_scales.shape(0) != gpu_half ||
+      gate_scales.shape(1) != K / group_size) {
+    throw std::invalid_argument(
+        "ANE hybrid split affine SwiGLU shape mismatch.");
+  }
+  Shape shape = x.shape();
+  shape.back() = (ane_n + gpu_n) / 2;
+  return array(std::move(shape), x.dtype(),
+               std::make_shared<AneHybridQ4Primitive>(
+                   stream, ane_model, bits, variant, group_size,
+                   /* fuse_swiglu */ true, /* profile_category */ -1,
+                   /* cpu_fp16 */ false, /* cpu_threads */ 0,
+                   /* cpu_shared_resource */ false, geglu,
+                   /* split_suffix */ true),
+               std::vector<array>{x, gate_weight, gate_scales, gate_biases,
+                                  up_weight, up_scales, up_biases});
+}
+
+array qwen35_ane_q4_swiglu_split_t(
+    const array &x, const array &gate_weight, const array &gate_scales,
+    const array &gate_biases, const array &up_weight, const array &up_scales,
+    const array &up_biases, const std::shared_ptr<AneLinearModel> &ane_model,
+    int variant, int group_size, bool geglu, StreamOrDevice s) {
+  return qwen35_ane_affine_swiglu_split_t(
+      x, gate_weight, gate_scales, gate_biases, up_weight, up_scales,
+      up_biases, ane_model, 4, variant, group_size, geglu, s);
 }
 
 array qwen35_ane_cpu_fp16_swiglu_t(

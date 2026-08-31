@@ -153,6 +153,12 @@ class _CombinedMLPState:
     cpu_outputs: int = 0
     down_cpu: _CpuLinearState | None = None
     down_ane: _AneDownState | None = None
+    # Set together when the GPU suffix is bound as row-slice views of the
+    # model's own gate and up weights. ``weight``/``scales``/``biases`` then
+    # hold the gate views rather than a concatenated copy of both projections.
+    up_weight: mx.array | None = None
+    up_scales: mx.array | None = None
+    up_biases: mx.array | None = None
 
 
 @dataclass(frozen=True)
@@ -250,6 +256,36 @@ def _fused_swiglu_symbol(bits: int, *, dual: bool) -> str:
             else "qwen35_ane_affine_swiglu_t"
         )
     raise ValueError(f"Unsupported ANE SwiGLU bit width: {bits}")
+
+
+def _split_suffix_symbol(bits: int) -> str:
+    """Fused GLU entry point that takes the gate and up suffixes separately."""
+    return (
+        "qwen35_ane_q4_swiglu_split_t"
+        if bits == 4
+        else "qwen35_ane_affine_swiglu_split_t"
+    )
+
+
+def _split_suffix_supported(bits: int, *, dual_ane: bool, cpu_outputs: int) -> bool:
+    """Whether the suffix can be bound as views instead of a retained copy.
+
+    Only the single-ANE, no-CPU-share fused GLU path has a split entry point;
+    every other combination keeps the packed layout. Gated on the extension so
+    a prebuilt bundle that predates the split kernels keeps working.
+    """
+    from omlx.custom_kernels.qwen35_prefill import fast
+
+    if dual_ane or cpu_outputs:
+        return False
+    if not getattr(fast, "qwen35_ane_split_suffix_available", None):
+        return False
+    try:
+        if not fast.qwen35_ane_split_suffix_available():
+            return False
+    except Exception:
+        return False
+    return fast.has_symbol(_split_suffix_symbol(bits))
 
 
 def _geglu_args(config: _AnePrefillConfig) -> tuple:
@@ -656,16 +692,41 @@ def _compile_pair(mlp: Any, config: _AnePrefillConfig) -> _CombinedMLPState | No
                     axis=0,
                 )
             )
-        weight = mx.contiguous(
-            mx.concatenate((gate.weight[gpu_start:], up.weight[gpu_start:]), axis=0)
+        split_suffix = _split_suffix_supported(
+            bits, dual_ane=dual_ane, cpu_outputs=cpu_outputs
         )
-        scales = mx.contiguous(
-            mx.concatenate((gate.scales[gpu_start:], up.scales[gpu_start:]), axis=0)
-        )
-        biases = mx.contiguous(
-            mx.concatenate((gate.biases[gpu_start:], up.biases[gpu_start:]), axis=0)
-        )
+        if split_suffix:
+            # A trailing row-slice of a row-contiguous array is itself
+            # row-contiguous, so these are views: the concatenated copy they
+            # replace costs (1 - ane_fraction) of this layer's gate/up bytes
+            # for the lifetime of the model, and the originals cannot be freed
+            # because decode falls back to them.
+            weight = gate.weight[gpu_start:]
+            scales = gate.scales[gpu_start:]
+            biases = gate.biases[gpu_start:]
+            up_weight = up.weight[gpu_start:]
+            up_scales = up.scales[gpu_start:]
+            up_biases = up.biases[gpu_start:]
+        else:
+            weight = mx.contiguous(
+                mx.concatenate(
+                    (gate.weight[gpu_start:], up.weight[gpu_start:]), axis=0
+                )
+            )
+            scales = mx.contiguous(
+                mx.concatenate(
+                    (gate.scales[gpu_start:], up.scales[gpu_start:]), axis=0
+                )
+            )
+            biases = mx.contiguous(
+                mx.concatenate(
+                    (gate.biases[gpu_start:], up.biases[gpu_start:]), axis=0
+                )
+            )
+            up_weight = up_scales = up_biases = None
         values = [dense0, weight, scales, biases]
+        if up_weight is not None:
+            values.extend((up_weight, up_scales, up_biases))
         if cpu_weight is not None:
             values.append(cpu_weight)
         if dense1 is not None:
@@ -693,6 +754,9 @@ def _compile_pair(mlp: Any, config: _AnePrefillConfig) -> _CombinedMLPState | No
             group_size=group_size,
             cpu_weight=cpu_weight,
             cpu_outputs=cpu_outputs,
+            up_weight=up_weight,
+            up_scales=up_scales,
+            up_biases=up_biases,
             down_cpu=_prepare_cpu_linear(
                 mlp.down_proj, config.cpu_down_fraction
             ),
@@ -1916,6 +1980,46 @@ def _backend_exact(
                     state.biases,
                     state.model,
                     state.model1,
+                    state.bits,
+                    config.variant,
+                    state.group_size,
+                    *_geglu_args(config),
+                )
+            return _post_ane_down(
+                mlp.down_proj,
+                activation,
+                state.down_ane,
+                config,
+                state.down_cpu,
+            )
+
+        if state.up_weight is not None:
+            # Suffix bound as views; the fused GLU merge reads gate and up from
+            # two buffers instead of two halves of one.
+            if not fast.has_symbol(_split_suffix_symbol(state.bits)):
+                return None
+            suffix = (
+                state.weight,
+                state.scales,
+                state.biases,
+                state.up_weight,
+                state.up_scales,
+                state.up_biases,
+            )
+            if state.bits == 4:
+                activation = fast.qwen35_ane_q4_swiglu_split_t(
+                    x,
+                    *suffix,
+                    state.model,
+                    config.variant,
+                    state.group_size,
+                    *_geglu_args(config),
+                )
+            else:
+                activation = fast.qwen35_ane_affine_swiglu_split_t(
+                    x,
+                    *suffix,
+                    state.model,
                     state.bits,
                     config.variant,
                     state.group_size,

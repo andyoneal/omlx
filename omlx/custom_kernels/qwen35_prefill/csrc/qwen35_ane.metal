@@ -163,6 +163,44 @@ template <typename T, typename Act>
       static_cast<T>(Act()(gate, up));
 }
 
+// Same merge as qwen35_ane_merge_glu_output, except the GPU suffix arrives as
+// separate gate and up buffers instead of one array holding both halves. The
+// caller can then bind row-slice views of the model's own gate_proj and
+// up_proj weights rather than retaining a concatenated copy of them, which
+// costs (1 - ane_fraction) of a layer's gate/up bytes for the model's lifetime.
+template <typename T, typename Act>
+[[kernel]] void qwen35_ane_merge_glu_split_output(
+    const device float16_t *ane_planar [[buffer(0)]],
+    const device T *gpu_gate [[buffer(1)]],
+    const device T *gpu_up [[buffer(2)]], device T *activation [[buffer(3)]],
+    constant int &M [[buffer(4)]], constant int &ane_hidden [[buffer(5)]],
+    constant int &gpu_hidden [[buffer(6)]],
+    uint2 gid [[thread_position_in_grid]]) {
+  const uint n = gid.x;
+  const uint m = gid.y;
+  const uint total_hidden = static_cast<uint>(ane_hidden + gpu_hidden);
+  if (m >= static_cast<uint>(M) || n >= total_hidden) {
+    return;
+  }
+
+  float gate;
+  float up;
+  if (n < static_cast<uint>(ane_hidden)) {
+    gate = static_cast<float>(ane_planar[n * M + m]);
+    up = static_cast<float>(
+        ane_planar[(static_cast<uint>(ane_hidden) + n) * M + m]);
+  } else {
+    const uint suffix = n - static_cast<uint>(ane_hidden);
+    // Each suffix buffer holds one projection, so the row stride is
+    // gpu_hidden rather than the packed layout's 2 * gpu_hidden.
+    const uint base = m * static_cast<uint>(gpu_hidden);
+    gate = static_cast<float>(gpu_gate[base + suffix]);
+    up = static_cast<float>(gpu_up[base + suffix]);
+  }
+  activation[m * total_hidden + n] =
+      static_cast<T>(Act()(gate, up));
+}
+
 template <typename T>
 [[kernel]] void qwen35_ane_merge_dual_output(
     const device float16_t *ane0_planar [[buffer(0)]],
@@ -462,6 +500,10 @@ template <typename T>
                      qwen35_ane_merge_glu_output, type, SwiGlu);                \
   instantiate_kernel("qwen35_ane_merge_geglu_output_" #type,                   \
                      qwen35_ane_merge_glu_output, type, GeGlu);                 \
+  instantiate_kernel("qwen35_ane_merge_swiglu_split_output_" #type,            \
+                     qwen35_ane_merge_glu_split_output, type, SwiGlu);          \
+  instantiate_kernel("qwen35_ane_merge_geglu_split_output_" #type,              \
+                     qwen35_ane_merge_glu_split_output, type, GeGlu);           \
   instantiate_kernel("qwen35_ane_merge_dual_output_" #type,                   \
                      qwen35_ane_merge_dual_output, type);                      \
   instantiate_kernel("qwen35_ane_merge_dual_swiglu_output_" #type,            \
