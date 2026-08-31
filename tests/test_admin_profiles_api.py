@@ -1566,7 +1566,8 @@ class TestSettingsSnapshotRoutes:
         source = ModelSettings(
             temperature=0.2,
             qwen35_ane_prefill_enabled=False,
-            qwen35_ane_prefill_sequence_length=128,
+            # Legal for K2 (32-aligned, floor 32), below Qwen's 128 floor.
+            qwen35_ane_prefill_sequence_length=96,
         )
         validate_ane_prefill(source.to_dict(), "k2_horizon")
         recipe = settings_recipe.encode_recipe(_filter_uploaded_settings(source))
@@ -1578,7 +1579,7 @@ class TestSettingsSnapshotRoutes:
         assert saved.temperature == 0.2
         assert saved.qwen35_ane_prefill_enabled is False
         assert saved.qwen35_ane_prefill_sequence_length == (
-            2048 if target_type == "qwen3_5" else 128
+            2048 if target_type == "qwen3_5" else 96
         )
         assert [item["feature"] for item in response.json()["skipped"]] == (
             ["ane_prefill"] if target_type == "qwen3_5" else []

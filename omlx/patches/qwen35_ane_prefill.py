@@ -38,7 +38,7 @@ _GEGLU: Callable[[mx.array, mx.array], mx.array] | None = None
 # fallback-only budget.
 _ANE_RESIDENT_PROGRAM_LIMIT = 120
 # Shared shape limits for compilation validation and scheduler guidance.
-_ANE_MIN_SEQUENCE_LENGTH = 1024
+_ANE_MIN_SEQUENCE_LENGTH = 128
 _ANE_SEQUENCE_LENGTH_ALIGNMENT = 64
 # First retry cap for split procedure banks after a monolithic bank fails to
 # load. Program-create maps a bank's whole weight blob into the owning ANE's

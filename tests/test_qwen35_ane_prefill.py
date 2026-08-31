@@ -341,8 +341,11 @@ def test_oversized_shape_recommends_a_valid_sequence_length(caplog, width, recom
 
 
 def test_sub_minimum_width_requires_padding_or_wider_chunks(caplog):
+    minimum = ane_patch._ANE_MIN_SEQUENCE_LENGTH
     scheduler = SimpleNamespace(
-        config=SimpleNamespace(prefill_step_size=2048, paged_cache_block_size=512),
+        config=SimpleNamespace(
+            prefill_step_size=2048, paged_cache_block_size=minimum // 2
+        ),
         _qwen35_prefill_floor=4096,
         block_aware_cache=object(),
     )
@@ -357,7 +360,9 @@ def test_sub_minimum_width_requires_padding_or_wider_chunks(caplog):
     assert "changing sequence_length alone" in caplog.text
 
     with pytest.raises(ValueError):
-        ane_patch.configure_qwen35_ane_prefill_scheduler(scheduler, 512)
+        ane_patch.configure_qwen35_ane_prefill_scheduler(
+            scheduler, minimum - ane_patch._ANE_SEQUENCE_LENGTH_ALIGNMENT
+        )
 
 
 def test_validator_and_warning_share_one_minimum(caplog):
@@ -2470,7 +2475,7 @@ def test_install_dispatch_wraps_outer_q4_mlp_dispatch(monkeypatch):
 
 @pytest.mark.parametrize(
     ("sequence_length", "fraction", "max_layers"),
-    [(512, 0.4, 1), (2048, 0.01, 1), (2048, 0.4, 0)],
+    [(64, 0.4, 1), (2048, 0.01, 1), (2048, 0.4, 0)],
 )
 def test_enable_rejects_unsafe_fixed_shape_settings(
     sequence_length, fraction, max_layers

@@ -88,7 +88,7 @@ def validate_ane_prefill(settings: dict, model_type: str | None) -> None:
     if settings.get("qwen35_ane_prefill_enabled") and backend is None:
         raise ValueError("ANE prefill is unavailable for this model.")
     width = settings.get("qwen35_ane_prefill_sequence_length", 2048)
-    minimum, alignment = (32, 32) if backend == "k2" else (1024, 64)
+    minimum, alignment = (32, 32) if backend == "k2" else (128, 64)
     if type(width) is not int or width < minimum or width % alignment:
         raise ValueError(
             f"ANE prompt block must be a multiple of {alignment} and at least {minimum}."
