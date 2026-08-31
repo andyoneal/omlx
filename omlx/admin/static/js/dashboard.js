@@ -247,7 +247,7 @@
                 qwen35_ane_prefill_cpu_threads: 8,
                 qwen35_ane_prefill_cpu_shared_resource: true,
                 gemma4_ane_prefill_enabled: false,
-                gemma4_ane_prefill_sequence_length: 2048,
+                gemma4_ane_prefill_sequence_length: 128,
                 gemma4_ane_prefill_tail_padding_min_tokens: 0,
                 gemma4_ane_prefill_fraction: 0.5,
                 gemma4_ane_prefill_max_layers: 60,
@@ -7427,7 +7427,7 @@
                     qwen35_ane_prefill_cpu_threads: s.qwen35_ane_prefill_cpu_threads ?? 8,
                     qwen35_ane_prefill_cpu_shared_resource: s.qwen35_ane_prefill_cpu_shared_resource !== false,
                     gemma4_ane_prefill_enabled: s.gemma4_ane_prefill_enabled || false,
-                    gemma4_ane_prefill_sequence_length: s.gemma4_ane_prefill_sequence_length || 2048,
+                    gemma4_ane_prefill_sequence_length: s.gemma4_ane_prefill_sequence_length || 128,
                     gemma4_ane_prefill_tail_padding_min_tokens: s.gemma4_ane_prefill_tail_padding_min_tokens ?? 0,
                     gemma4_ane_prefill_fraction: s.gemma4_ane_prefill_fraction ?? 0.5,
                     gemma4_ane_prefill_max_layers: s.gemma4_ane_prefill_max_layers || 60,
@@ -8374,7 +8374,7 @@
                                     : 8,
                                 qwen35_ane_prefill_cpu_shared_resource: !!this.modelSettings.qwen35_ane_prefill_cpu_shared_resource,
                                 gemma4_ane_prefill_enabled: !!this.modelSettings.gemma4_ane_prefill_enabled,
-                                gemma4_ane_prefill_sequence_length: Number(this.modelSettings.gemma4_ane_prefill_sequence_length) || 2048,
+                                gemma4_ane_prefill_sequence_length: Number(this.modelSettings.gemma4_ane_prefill_sequence_length) || 128,
                                 gemma4_ane_prefill_tail_padding_min_tokens: Number.isFinite(Number(this.modelSettings.gemma4_ane_prefill_tail_padding_min_tokens))
                                     ? Number(this.modelSettings.gemma4_ane_prefill_tail_padding_min_tokens)
                                     : 0,
@@ -8483,7 +8483,7 @@
                                     qwen35_ane_prefill_cpu_threads: 8,
                                     qwen35_ane_prefill_cpu_shared_resource: true,
                                     gemma4_ane_prefill_enabled: false,
-                                    gemma4_ane_prefill_sequence_length: 2048,
+                                    gemma4_ane_prefill_sequence_length: 128,
                                     gemma4_ane_prefill_tail_padding_min_tokens: 0,
                                     gemma4_ane_prefill_fraction: 0.5,
                                     gemma4_ane_prefill_max_layers: 60,
@@ -8593,7 +8593,7 @@
                         this.modelSettings.qwen35_ane_prefill_cpu_threads = 8;
                         this.modelSettings.qwen35_ane_prefill_cpu_shared_resource = true;
                         this.modelSettings.gemma4_ane_prefill_enabled = false;
-                        this.modelSettings.gemma4_ane_prefill_sequence_length = 2048;
+                        this.modelSettings.gemma4_ane_prefill_sequence_length = 128;
                         this.modelSettings.gemma4_ane_prefill_tail_padding_min_tokens = 0;
                         this.modelSettings.gemma4_ane_prefill_fraction = 0.5;
                         this.modelSettings.gemma4_ane_prefill_max_layers = 60;
