@@ -266,7 +266,7 @@ def test_qwen_ane_arbitrary_inputs_are_validated_before_save():
     script = _dashboard_script()
 
     assert "validateQwenAneSettings()" in script
-    assert "ANE prompt block must be a multiple of 64." in script
+    assert "ANE prompt block must be a multiple of 32." in script
     assert "MLP ANE and CPU fractions must total less than 1.0." in script
     assert "GDN ANE and CPU fractions must total less than 1.0." in script
     assert "CPU worker count must be between 0 and 64." in script

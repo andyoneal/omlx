@@ -378,9 +378,10 @@ def configure_qwen35_ane_prefill_scheduler(
     sequence_length: int,
 ) -> bool:
     """Keep normal wide prompt chunks; projection backends tile internally."""
-    if sequence_length < 128 or sequence_length % 64:
+    # 32, not 64 -- see enable_qwen35_ane_prefill for the measurement.
+    if sequence_length < 128 or sequence_length % 32:
         raise ValueError(
-            "ANE prefill sequence_length must be a multiple of 64 >= 128"
+            "ANE prefill sequence_length must be a multiple of 32 >= 128"
         )
     config = getattr(scheduler, "config", None)
     if config is None:
@@ -3281,8 +3282,19 @@ def enable_qwen35_ane_prefill(
     behaviour, so this stays one runtime shared across families rather than a
     fork per family.
     """
-    if sequence_length < 128 or sequence_length % 64:
-        raise ValueError("ANE prefill sequence_length must be a multiple of 64 >= 128")
+    # A multiple of 32, not 64: these programs carry the token count on the W
+    # axis of a tensor<fp16, [1, C, 1, T]>, whose offsets must land on a
+    # 64-byte boundary -- 32 fp16 elements. A width off that boundary compiles
+    # and then fails at execution. Across hidden 3840/5376/4096, every multiple
+    # of 32 from 96 to 2048 matches the GPU to cosine 0.99999 and every
+    # non-multiple fails; 64 also refused 96, 160, 224 and 288, which all work.
+    # The 128 floor is not a limit on T. At small T the compiler transposes and
+    # puts the fused output width on W, which caps at 16384 through M3: at
+    # fraction 0.62 that width is 18944 and T <= 64 is refused, at 0.40 it is
+    # 12288 and T = 32 compiles. Kept a constant because the real condition
+    # follows the fraction, and a dispatch that small is overhead-bound anyway.
+    if sequence_length < 128 or sequence_length % 32:
+        raise ValueError("ANE prefill sequence_length must be a multiple of 32 >= 128")
     if not 0.05 <= fraction <= 0.90:
         raise ValueError("ANE prefill fraction must be between 0.05 and 0.90")
     if max_layers < 1:

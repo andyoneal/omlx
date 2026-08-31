@@ -677,6 +677,43 @@ def test_enable_marks_only_requested_number_of_loaded_mlps(monkeypatch):
     )
 
 
+def test_enable_accepts_widths_on_the_32_element_boundary(monkeypatch):
+    """The width rule is a multiple of 32, not 64.
+
+    The programs carry the token count on the W axis, whose offsets land on a
+    64-byte boundary -- 32 fp16 elements. 160 and 224 run and match the GPU to
+    cosine 0.99999 on hidden 3840, 5376 and 4096; a 64-element rule refused
+    them. Asserted here because this guard, not the admin validator, is what
+    makes a rejected width fail the model load.
+    """
+    monkeypatch.setattr(fast, "qwen35_ane_available", lambda: True)
+    monkeypatch.setattr(fast, "has_symbol", lambda name: False)
+    monkeypatch.setattr(ane_patch, "_install_dispatch", lambda: True)
+    monkeypatch.setattr(ane_patch, "_eligible_pair", lambda mlp: True)
+    monkeypatch.setattr(ane_patch, "_compile_pair", lambda mlp, config: object())
+
+    for width in (160, 224):
+        assert ane_patch.enable_qwen35_ane_prefill(
+            _Model(2), sequence_length=width, fraction=0.4, max_layers=2
+        ) == 2
+
+    # Off the boundary the program compiles and then fails at execution, so it
+    # has to be refused here rather than left to the engine.
+    for width in (2000, 112, 100):
+        with pytest.raises(ValueError, match="multiple of 32"):
+            ane_patch.enable_qwen35_ane_prefill(
+                _Model(2), sequence_length=width, fraction=0.4, max_layers=2
+            )
+
+    # The floor is unchanged, and it is not a limit on T: at small T the
+    # compiler puts the fused output width on W, which caps at 16384 through
+    # M3, so whether 64 compiles follows the fraction rather than the width.
+    with pytest.raises(ValueError, match="multiple of 32"):
+        ane_patch.enable_qwen35_ane_prefill(
+            _Model(2), sequence_length=64, fraction=0.4, max_layers=2
+        )
+
+
 @pytest.mark.parametrize("available", [False, True])
 def test_cpu_shared_resource_scheduler_is_capability_guarded(
     monkeypatch, available

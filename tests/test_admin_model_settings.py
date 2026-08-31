@@ -260,7 +260,7 @@ async def test_qwen_ane_prefill_rejects_invalid_block_size():
     pool, entry = _failed_pool()
     entry.config_model_type = "qwen3_5"
 
-    with pytest.raises(admin_routes.HTTPException, match="multiple of 64"):
+    with pytest.raises(admin_routes.HTTPException, match="multiple of 32"):
         await _update_settings(
             pool,
             ModelSettings(),
@@ -268,6 +268,41 @@ async def test_qwen_ane_prefill_rejects_invalid_block_size():
                 qwen35_ane_prefill_sequence_length=2000
             ),
         )
+
+
+@pytest.mark.asyncio
+async def test_qwen_ane_prefill_accepts_a_multiple_of_32():
+    """The alignment is 32 fp16 elements (a 64-byte W offset), not 64.
+
+    160 compiles and matches the GPU to cosine 0.99999 on hidden 3840, 5376
+    and 4096; the old rule refused it.
+    """
+    pool, entry = _failed_pool()
+    entry.config_model_type = "qwen3_5"
+    settings = ModelSettings()
+
+    await _update_settings(
+        pool,
+        settings,
+        admin_routes.ModelSettingsRequest(qwen35_ane_prefill_sequence_length=160),
+    )
+
+    assert settings.qwen35_ane_prefill_sequence_length == 160
+
+
+@pytest.mark.asyncio
+async def test_gemma4_ane_prefill_accepts_a_multiple_of_32():
+    pool, entry = _failed_pool()
+    entry.config_model_type = "gemma4"
+    settings = ModelSettings()
+
+    await _update_settings(
+        pool,
+        settings,
+        admin_routes.ModelSettingsRequest(gemma4_ane_prefill_sequence_length=224),
+    )
+
+    assert settings.gemma4_ane_prefill_sequence_length == 224
 
 
 @pytest.mark.asyncio
@@ -489,7 +524,7 @@ async def test_gemma4_ane_prefill_rejects_invalid_block_size():
     pool, entry = _failed_pool()
     entry.config_model_type = "gemma4"
 
-    with pytest.raises(admin_routes.HTTPException, match="multiple of 64"):
+    with pytest.raises(admin_routes.HTTPException, match="multiple of 32"):
         await _update_settings(
             pool,
             ModelSettings(),

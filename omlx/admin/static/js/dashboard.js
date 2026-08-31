@@ -8212,8 +8212,8 @@
 
                 const sequenceLength = Number(this.modelSettings.qwen35_ane_prefill_sequence_length);
                 let error = integer(sequenceLength, 'ANE prompt block', 128);
-                if (!error && sequenceLength % 64 !== 0) {
-                    error = 'ANE prompt block must be a multiple of 64.';
+                if (!error && sequenceLength % 32 !== 0) {
+                    error = 'ANE prompt block must be a multiple of 32.';
                 }
                 if (error) return error;
                 error = integer(
