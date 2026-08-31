@@ -271,8 +271,9 @@ class ModelSettings:
     # Experimental private-API ANE/GPU prefill for dense Gemma 4 MLPs. Off by
     # default for the same reasons as the Qwen variant. The gate/up pair is
     # merged with GeGLU; the down projection stays on the GPU because its
-    # 21504-wide contraction exceeds the ANE's declared 16384 contraction
-    # cap, which is identical on every architecture.
+    # 21504-wide contraction exceeds the 16384 cap the ANE declares for that
+    # axis through M3. M4 raises the cap to 65536, so the split is a constraint
+    # of the current target rather than a permanent one.
     gemma4_ane_prefill_enabled: bool = False
     gemma4_ane_prefill_sequence_length: int = 2048
     gemma4_ane_prefill_tail_padding_min_tokens: int = 0
