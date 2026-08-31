@@ -39,7 +39,7 @@ _GEGLU: Callable[[mx.array, mx.array], mx.array] | None = None
 _ANE_RESIDENT_PROGRAM_LIMIT = 120
 # Shared shape limits for compilation validation and scheduler guidance.
 _ANE_MIN_SEQUENCE_LENGTH = 128
-_ANE_SEQUENCE_LENGTH_ALIGNMENT = 64
+_ANE_SEQUENCE_LENGTH_ALIGNMENT = 32
 # First retry cap for split procedure banks after a monolithic bank fails to
 # load. Program-create maps a bank's whole weight blob into the owning ANE's
 # ~4 GiB device address window, so single-die chips reject two monolithic
@@ -381,6 +381,7 @@ def configure_qwen35_ane_prefill_scheduler(
     sequence_length: int,
 ) -> bool:
     """Keep normal wide prompt chunks; projection backends tile internally."""
+    # 32, not 64 -- see enable_qwen35_ane_prefill for the measurement.
     if (
         sequence_length < _ANE_MIN_SEQUENCE_LENGTH
         or sequence_length % _ANE_SEQUENCE_LENGTH_ALIGNMENT
@@ -3271,6 +3272,17 @@ def enable_qwen35_ane_prefill(
     behaviour, so this stays one runtime shared across families rather than a
     fork per family.
     """
+    # A multiple of 32, not 64: these programs carry the token count on the W
+    # axis of a tensor<fp16, [1, C, 1, T]>, whose offsets must land on a
+    # 64-byte boundary -- 32 fp16 elements. A width off that boundary compiles
+    # and then fails at execution. Across hidden 3840/5376/4096, every multiple
+    # of 32 from 96 to 2048 matches the GPU to cosine 0.99999 and every
+    # non-multiple fails; 64 also refused 96, 160, 224 and 288, which all work.
+    # The 128 floor is not a limit on T. At small T the compiler transposes and
+    # puts the fused output width on W, which caps at 16384 through M3: at
+    # fraction 0.62 that width is 18944 and T <= 64 is refused, at 0.40 it is
+    # 12288 and T = 32 compiles. Kept a constant because the real condition
+    # follows the fraction, and a dispatch that small is overhead-bound anyway.
     if (
         sequence_length < _ANE_MIN_SEQUENCE_LENGTH
         or sequence_length % _ANE_SEQUENCE_LENGTH_ALIGNMENT

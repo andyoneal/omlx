@@ -1898,7 +1898,7 @@
   "js.success.settings_saved": "设置已成功保存",
   "js.error.add_to_queue_failed": "加入队列失败",
   "js.error.ane_oq_a8_conflict": "ANE 预填充与 INT8 激活预填充不能同时启用，二者加速的是同一批投影。请关闭其中一个。",
-  "js.error.ane_prompt_block_multiple": "ANE 提示词块必须是 64 的倍数。",
+  "js.error.ane_prompt_block_multiple": "ANE 提示词块必须是 32 的倍数。",
   "js.error.ane_tail_padding_lt_prompt_block": "ANE 尾部填充阈值必须小于提示词块。",
   "js.error.ane_tuning_failed": "ANE 调优失败。",
   "js.error.apply_ane_tuning_result_failed": "应用 ANE 调优结果失败。",
