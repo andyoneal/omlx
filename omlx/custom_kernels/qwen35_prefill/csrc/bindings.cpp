@@ -52,6 +52,13 @@ NB_MODULE(_ext, m) {
       &omlx::qwen35_prefill_kernels::qwen35_ane_profile_set_enabled,
       "enabled"_a);
   m.def(
+      "qwen35_ane_fence_set_enabled",
+      &omlx::qwen35_prefill_kernels::qwen35_ane_fence_set_enabled,
+      "enabled"_a);
+  m.def(
+      "qwen35_ane_fence_available",
+      &omlx::qwen35_prefill_kernels::qwen35_ane_fence_available);
+  m.def(
       "qwen35_ane_profile_reset",
       &omlx::qwen35_prefill_kernels::qwen35_ane_profile_reset);
   m.def(

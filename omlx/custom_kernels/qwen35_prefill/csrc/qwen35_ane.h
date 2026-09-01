@@ -33,6 +33,12 @@ public:
   struct Ticket {
     uint64_t ready;
     uint64_t done;
+    // Whether this dispatch orders the engine behind the pack kernel with a
+    // device-side wait on the shared event instead of a host round trip.
+    // Decided once, in begin(), and carried on the ticket: the dispatch site
+    // and the evaluation thread must not reach opposite answers for one
+    // operation, which a live gate read on each side would allow.
+    bool fenced;
   };
 
   Ticket begin(MTL::CommandBuffer *command_buffer);
@@ -43,6 +49,12 @@ public:
   // without latching the program (the failure is per-submission, typically
   // a request abort, not a program fault).
   void cancel_ticket(Ticket ticket);
+  // A fenced dispatch's pack command buffer failed, so the encoded ready
+  // signal it was waiting on will never fire. Publish that value so the
+  // queued request is released instead of sitting in the driver forever; the
+  // dispatch still fails on the buffer's status before anything reads the
+  // output. Only meaningful for a ticket with fenced set.
+  void release_fence_wait(Ticket ticket);
   // True once an evaluation has failed or timed out on this program; the
   // program is latched and every later begin() will throw. Lets the Python
   // layer detect a wedged program at graph-construction time and fall back.
@@ -127,6 +139,17 @@ bool qwen35_cpu_shared_resource_available();
 bool qwen35_ane_fused_geglu_available();
 bool qwen35_ane_split_suffix_available();
 void qwen35_ane_profile_set_enabled(bool enabled);
+// Device-side GPU->ANE ordering, overriding OMLX_QWEN35_ANE_FENCE for the
+// rest of the process. Settable at runtime because the only sound way to
+// compare the two orderings is to interleave them inside one process:
+// engine timings drift across a session and between processes by more than
+// the effect being measured, so a build-to-build or process-to-process A/B
+// cannot resolve it.
+void qwen35_ane_fence_set_enabled(bool enabled);
+// Whether the private wait-event surface this ordering needs resolved in
+// this runtime. False means every dispatch takes the host round trip
+// regardless of the gate.
+bool qwen35_ane_fence_available();
 void qwen35_ane_profile_reset();
 std::vector<double> qwen35_ane_profile_snapshot();
 
