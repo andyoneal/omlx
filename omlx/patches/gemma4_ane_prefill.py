@@ -52,9 +52,13 @@ VARIANT_SUPPORT: tuple[dict[str, Any], ...] = (
         "model_type": "gemma4 (enable_moe_block)",
         "supported": False,
         "reason": (
-            "Routed experts run through SwitchGLU. The dense per-layer mlp "
-            "survives beside them and shares the same shape, so this is a "
-            "gate change plus width bookkeeping rather than a new backend."
+            "Routed experts run through SwitchGLU. The dense shared mlp "
+            "survives beside them, so a gate change plus width bookkeeping "
+            "would reach it -- but that alone measures 0.879x at best legal "
+            "width, because the block displaces ~1.35 ms of GPU work against "
+            "a ~1.5 ms fixed dispatch cost. What pays on this model is the "
+            "dense subset, attention projections plus the dense mlp at 53.4% "
+            "of projection FLOPs, and no attention-projection path exists yet."
         ),
     },
     {
