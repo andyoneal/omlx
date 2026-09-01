@@ -37,6 +37,39 @@ _GEGLU: Callable[[mx.array, mx.array], mx.array] | None = None
 # all slices into one multi-procedure program per ANE instance and bypass this
 # fallback-only budget.
 _ANE_RESIDENT_PROGRAM_LIMIT = 120
+
+
+def ane_instance_count() -> int:
+    """How many physical ANE instances this machine exposes.
+
+    Only Ultra parts present two, as instance hints 1 and 2. Detection failures
+    answer one, which is the safe direction: an unpinned dispatch runs
+    everywhere, while a hint naming an instance the machine does not have is
+    range-checked against the engine count by the private selector and
+    rejected rather than clamped.
+    """
+    try:
+        from omlx.utils.hardware import get_chip_name, parse_chip_info
+
+        return 2 if parse_chip_info(get_chip_name())[1] == "Ultra" else 1
+    except Exception:
+        logger.debug("ANE instance count undetermined; assuming one", exc_info=True)
+        return 1
+
+
+def dual_instance_hints() -> tuple[int, int]:
+    """Instance hints for the two banks of a dual dispatch.
+
+    ``(1, 2)`` pins one bank per physical die, which is the point of the dual
+    path. Where only one engine exists the hints become ``(0, 0)``: the banks
+    still exist, because the caller asked for them and the split is what is
+    being configured, but neither names an instance. That matches what the
+    machine actually does today -- an unknown option-dict key is never read, so
+    the pin is already inert on one die -- while not depending on it staying
+    unread. The hint is range-checked against the engine count where it is
+    honoured, and rejected rather than clamped.
+    """
+    return (1, 2) if ane_instance_count() >= 2 else (0, 0)
 # First retry cap for split procedure banks after a monolithic bank fails to
 # load. Program-create maps a bank's whole weight blob into the owning ANE's
 # ~4 GiB device address window, so single-die chips reject two monolithic
@@ -2428,14 +2461,15 @@ def _compile_dual_banks(
     """
     from omlx.custom_kernels.qwen35_prefill import fast
 
+    hint0, hint1 = dual_instance_hints()
     return _bank_split_ladder(
         [int(weight.nbytes) for weight in weights0],
         lambda start, stop: (
             fast.qwen35_ane_compile_linear_bank(
-                weights0[start:stop], sequence_length, 1
+                weights0[start:stop], sequence_length, hint0
             ),
             fast.qwen35_ane_compile_linear_bank(
-                weights1[start:stop], sequence_length, 2
+                weights1[start:stop], sequence_length, hint1
             ),
         ),
     )
@@ -2763,11 +2797,12 @@ def _enable_dual_procedure_banks(
             )
             return None
         if builder0 is not None:
+            hint0, hint1 = dual_instance_hints()
             banked_models = _bank_split_ladder(
                 source_bytes,
                 lambda start, stop: (
-                    builder0.compile(1, start, stop),
-                    builder1.compile(2, start, stop),
+                    builder0.compile(hint0, start, stop),
+                    builder1.compile(hint1, start, stop),
                 ),
             )
         else:
@@ -3033,9 +3068,10 @@ def _enable_fused_down_banks(
             staged.append((module, state))
         if not staged:
             continue
+        hint0, hint1 = dual_instance_hints()
         if builder0 is not None:
-            models0 = builder0.compile(1, 0, builder0.size)
-            models1 = builder1.compile(2, 0, builder1.size)
+            models0 = builder0.compile(hint0, 0, builder0.size)
+            models1 = builder1.compile(hint1, 0, builder1.size)
         else:
             mx.eval(*[w for weights in legacy_weights for w in weights])
             models0 = fast.qwen35_ane_compile_swiglu_down_bank(
@@ -3043,14 +3079,14 @@ def _enable_fused_down_banks(
                 [weights[1] for weights in legacy_weights],
                 [weights[2] for weights in legacy_weights],
                 config.sequence_length,
-                1,
+                hint0,
             )
             models1 = fast.qwen35_ane_compile_swiglu_down_bank(
                 [weights[3] for weights in legacy_weights],
                 [weights[4] for weights in legacy_weights],
                 [weights[5] for weights in legacy_weights],
                 config.sequence_length,
-                2,
+                hint1,
             )
         _warm_ane_models([*models0, *models1])
         for index, (module, state) in enumerate(staged):

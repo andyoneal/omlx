@@ -747,8 +747,13 @@ NSDictionary *ane_execution_options(int ane_instance) {
   if (ane_instance == 0) {
     return @{};
   }
-  if (ane_instance < 1 || ane_instance > 4) {
-    throw std::invalid_argument("ANE instance hint must be between 1 and 4.");
+  // No shipping Apple silicon exposes more than two ANE instances, and the
+  // private instance selector range-checks the hint against the engine count
+  // and rejects rather than clamps it. Refusing an impossible hint here fails
+  // it in this path, with a message, rather than as a driver error on whatever
+  // runtime begins honouring the option key.
+  if (ane_instance < 1 || ane_instance > 2) {
+    throw std::invalid_argument("ANE instance hint must be 1 or 2.");
   }
   // The private scheduler only accepts an instance hint for its single-ANE
   // procedure variant. M3 Ultra exposes the two physical dies as 1 and 2.

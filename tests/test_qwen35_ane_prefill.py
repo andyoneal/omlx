@@ -107,6 +107,23 @@ def _restore_lm_gdn_backend():
         q4_patch.register_qwen35_lm_gdn_prefill_backend(previous)
 
 
+@pytest.fixture(autouse=True)
+def _two_ane_instances(request, monkeypatch):
+    """Assert dual-path behaviour against two engines, not the host's count.
+
+    The dual banks carry instance hints only where a second engine exists, so
+    without pinning this every expectation about which instance a bank compiles
+    for would pass or fail on the machine running the suite. Tests marked
+    ``real_ane_instance_count`` opt out, because they are about the detection
+    itself.
+    """
+    if "real_ane_instance_count" in request.keywords:
+        return
+    import omlx.patches.qwen35_ane_prefill as patch
+
+    monkeypatch.setattr(patch, "ane_instance_count", lambda: 2)
+
+
 class _MLP(nn.Module):
     def __init__(self):
         super().__init__()
@@ -3249,6 +3266,36 @@ _ANE_MM_PATH = (
     Path(__file__).resolve().parents[1]
     / "omlx/custom_kernels/qwen35_prefill/csrc/qwen35_ane.mm"
 )
+
+
+def test_dual_instance_hints_name_no_instance_on_one_engine(monkeypatch):
+    """A hint may not name an instance the machine does not have.
+
+    The private selector range-checks the hint against the engine count and
+    rejects rather than clamps, so pinning to instance 2 where there is one
+    engine is a dispatch failure waiting on a runtime that reads the key. Zero
+    means unpinned, which is what one engine can honour.
+    """
+    import omlx.patches.qwen35_ane_prefill as patch
+
+    monkeypatch.setattr(patch, "ane_instance_count", lambda: 2)
+    assert patch.dual_instance_hints() == (1, 2)
+
+    monkeypatch.setattr(patch, "ane_instance_count", lambda: 1)
+    assert patch.dual_instance_hints() == (0, 0)
+
+
+@pytest.mark.real_ane_instance_count
+def test_instance_count_answers_one_when_detection_fails(monkeypatch):
+    """Unpinned runs everywhere; a wrong pin is rejected where it is read."""
+    import omlx.utils.hardware as hardware
+    import omlx.patches.qwen35_ane_prefill as patch
+
+    def _boom():
+        raise RuntimeError("no chip name")
+
+    monkeypatch.setattr(hardware, "get_chip_name", _boom)
+    assert patch.ane_instance_count() == 1
 
 
 @pytest.fixture(scope="module")
