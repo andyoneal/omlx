@@ -112,7 +112,7 @@ def _has_two_ane_dies() -> bool:
 def enable_gemma4_ane_prefill(
     model: Any,
     *,
-    sequence_length: int = 2048,
+    sequence_length: int = 128,
     fraction: float = 0.50,
     max_layers: int = 60,
     dual_ane: bool = True,
