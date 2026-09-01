@@ -1053,3 +1053,94 @@ def test_headroom_ceiling_is_none_when_memory_cannot_be_measured():
             return 0, 0
 
     assert ane_tuning._headroom_fraction_ceiling(_Patch, object(), 60) is None
+
+
+def _run_with_results(results: list[dict]) -> ane_tuning.ANETuningRun:
+    run = ane_tuning.create_run(
+        ane_tuning.ANETuningRequest(model_id="gemma", sequence_length=128, repeats=1)
+    )
+    run.results = results
+    return run
+
+
+def _measured(label: str, *, enabled: bool, tps, state="completed", **extra) -> dict:
+    candidate = ane_tuning._Candidate(label, enabled, extra.pop("mlp_fraction", None))
+    return {
+        **ane_tuning._empty_result(candidate),
+        "state": state,
+        "processing_tps": tps,
+        **extra,
+    }
+
+
+def test_early_stop_keeps_a_measured_win_over_the_gpu_baseline():
+    """A later failure says nothing about a candidate that already completed.
+
+    The refinement step can propose a share too large to admit its banks, and
+    on a 31B checkpoint it does. Recommending "disable the ANE" because of that
+    contradicts a measurement the same run had just taken.
+    """
+    baseline = _measured("GPU only", enabled=False, tps=129.5)
+    run = _run_with_results(
+        [
+            baseline,
+            _measured(
+                "Predicted optimum",
+                enabled=True,
+                tps=143.0,
+                mlp_fraction=0.30,
+                speedup_percent=10.42,
+            ),
+            _measured(
+                "Profile-refined optimum",
+                enabled=True,
+                tps=None,
+                state="failed",
+                mlp_fraction=0.465,
+            ),
+        ]
+    )
+
+    recommendation = ane_tuning._early_stop_recommendation(run, baseline)
+
+    assert recommendation["enabled"] is True
+    assert recommendation["mlp_fraction"] == 0.30
+    assert recommendation["processing_tps"] == 143.0
+    assert recommendation["speedup_percent"] == 10.42
+    assert recommendation["partial"] is True
+
+
+def test_early_stop_prefers_the_fastest_of_several_measured_candidates():
+    baseline = _measured("GPU only", enabled=False, tps=129.5)
+    run = _run_with_results(
+        [
+            baseline,
+            _measured("first", enabled=True, tps=135.0, mlp_fraction=0.20),
+            _measured("second", enabled=True, tps=143.0, mlp_fraction=0.30),
+            _measured("third", enabled=True, tps=None, state="failed"),
+        ]
+    )
+
+    recommendation = ane_tuning._early_stop_recommendation(run, baseline)
+
+    assert recommendation["mlp_fraction"] == 0.30
+    assert recommendation["processing_tps"] == 143.0
+
+
+def test_early_stop_keeps_ane_off_when_nothing_beat_the_baseline():
+    """A candidate that ran but lost is not a reason to enable the offload."""
+    baseline = _measured("GPU only", enabled=False, tps=129.5, speedup_percent=0.0)
+    run = _run_with_results(
+        [
+            baseline,
+            _measured("slower", enabled=True, tps=90.0, mlp_fraction=0.30),
+            _measured("failed", enabled=True, tps=None, state="failed"),
+        ]
+    )
+
+    recommendation = ane_tuning._early_stop_recommendation(run, baseline)
+
+    assert recommendation["enabled"] is False
+    assert recommendation["processing_tps"] == 129.5
+    assert recommendation["mlp_fraction"] is None
+    assert "partial" not in recommendation

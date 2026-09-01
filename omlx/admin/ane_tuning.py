@@ -485,6 +485,62 @@ async def _measure_result_slot(
         _refresh_speedups(run)
 
 
+def _early_stop_recommendation(
+    run: ANETuningRun, baseline_result: dict[str, Any]
+) -> dict[str, Any]:
+    """What to recommend when a run stops before finishing its matrix.
+
+    Keep whatever the run did establish. A later failure says nothing about a
+    candidate that already completed: the refinement step can propose a share
+    too large to admit its banks, and discarding a measured win because of that
+    reports "disable the ANE" on a machine where the run had just measured the
+    offload faster than the GPU. Falling back to the baseline is right only when
+    nothing actually beat it.
+    """
+    baseline_tps = baseline_result["processing_tps"]
+    measured = [
+        result
+        for result in run.results
+        if result.get("state") == "completed"
+        and result.get("enabled")
+        and result.get("processing_tps") is not None
+        and result["processing_tps"] > baseline_tps
+    ]
+    best = max(measured, key=lambda result: result["processing_tps"], default=None)
+    if best is None:
+        # A completed GPU-only baseline is still a valid answer: keep ANE off.
+        return {
+            "enabled": False,
+            "mlp_fraction": None,
+            "gdn_enabled": False,
+            "gdn_fraction": None,
+            "fused_down": False,
+            "processing_tps": baseline_tps,
+            "speedup_percent": baseline_result.get("speedup_percent"),
+            "sequence_length": run.request.sequence_length,
+            "tail_padding_min_tokens": 0,
+        }
+    return {
+        "enabled": True,
+        "mlp_fraction": best.get("mlp_fraction"),
+        "gdn_enabled": bool(best.get("gdn_enabled", False)),
+        "gdn_fraction": best.get("gdn_fraction"),
+        "cpu_enabled": bool(best.get("cpu_enabled", False)),
+        "cpu_fraction": best.get("cpu_fraction"),
+        "cpu_down_fraction": best.get("cpu_down_fraction"),
+        "cpu_gdn_fraction": best.get("cpu_gdn_fraction"),
+        "fused_down": bool(best.get("fused_down", False)),
+        "cpu_threads": best.get("cpu_threads"),
+        "processing_tps": best["processing_tps"],
+        "speedup_percent": best.get("speedup_percent"),
+        "sequence_length": run.request.sequence_length,
+        "tail_padding_min_tokens": 0,
+        # The matrix did not finish, so this share is the best measured rather
+        # than the best available.
+        "partial": True,
+    }
+
+
 def _settings_family(model: Any) -> str:
     """Which per-model settings family installs the ANE path for this model.
 
@@ -2412,20 +2468,7 @@ async def run_tuning(run: ANETuningRun, engine_pool: Any) -> None:
             run.recommendation is None
             and baseline_result.get("processing_tps") is not None
         ):
-            # A completed GPU-only baseline is still a valid answer: keep ANE
-            # off. Discarding it because a later measurement failed would
-            # throw away the one number the run did establish.
-            run.recommendation = {
-                "enabled": False,
-                "mlp_fraction": None,
-                "gdn_enabled": False,
-                "gdn_fraction": None,
-                "fused_down": False,
-                "processing_tps": baseline_result["processing_tps"],
-                "speedup_percent": baseline_result.get("speedup_percent"),
-                "sequence_length": run.request.sequence_length,
-                "tail_padding_min_tokens": 0,
-            }
+            run.recommendation = _early_stop_recommendation(run, baseline_result)
     finally:
         _restore_speed_priority(engine_pool, previous_speed_priority)
         try:
