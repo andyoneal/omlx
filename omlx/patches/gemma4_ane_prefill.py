@@ -86,9 +86,21 @@ def _mlp_classes() -> tuple[type, ...]:
 
 
 def _is_moe(model: Any) -> bool:
-    for holder in (getattr(model, "args", None), getattr(model, "config", None)):
-        if getattr(holder, "enable_moe_block", False):
-            return True
+    """Whether this checkpoint routes through MoE experts.
+
+    ``enable_moe_block`` lives on the *text* config. A Gemma 4 checkpoint whose
+    top-level ``model_type`` is ``gemma4`` loads as the multimodal wrapper even
+    when its weights are text-only, and that wrapper's own ``ModelArgs`` has no
+    such field -- so checking only the outermost holder reads False on a MoE
+    model and the gate below never fires. Walk the language-model holder too.
+    """
+    holders = [model, getattr(model, "language_model", None)]
+    for owner in holders:
+        if owner is None:
+            continue
+        for holder in (getattr(owner, "args", None), getattr(owner, "config", None)):
+            if getattr(holder, "enable_moe_block", False):
+                return True
     return False
 
 
