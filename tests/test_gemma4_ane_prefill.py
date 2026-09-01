@@ -330,6 +330,28 @@ def test_moe_checkpoints_are_refused_without_raising(monkeypatch):
     assert gemma4_patch.enable_gemma4_ane_prefill(model) == 0
 
 
+def test_moe_is_seen_through_the_multimodal_wrapper(monkeypatch):
+    """A text-only 26B A4B checkpoint still loads as ``gemma4.Model``.
+
+    Its top-level ``ModelArgs`` carries no ``enable_moe_block`` -- the flag is
+    on the nested ``language_model.args`` -- so a gate that reads only the
+    outermost holder accelerates 30 MoE MLPs it was written to refuse.
+    """
+    monkeypatch.setattr(
+        gemma4_patch,
+        "enable_qwen35_ane_prefill",
+        lambda *a, **k: pytest.fail("MoE must not reach the shared runtime"),
+    )
+    model = SimpleNamespace(
+        args=SimpleNamespace(),  # gemma4.ModelArgs has no enable_moe_block
+        language_model=SimpleNamespace(
+            args=SimpleNamespace(enable_moe_block=True)
+        ),
+    )
+    assert gemma4_patch._is_moe(model) is True
+    assert gemma4_patch.enable_gemma4_ane_prefill(model) == 0
+
+
 def test_kill_switch_disables_the_gemma_path(monkeypatch):
     monkeypatch.setenv("OMLX_QWEN35_ANE_PREFILL", "0")
     monkeypatch.setattr(
