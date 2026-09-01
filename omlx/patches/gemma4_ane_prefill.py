@@ -111,18 +111,12 @@ def _is_moe(model: Any) -> bool:
 def _has_two_ane_dies() -> bool:
     """Whether this machine exposes two physical ANE instances.
 
-    Only Ultra parts do: they present the two dies as ANE instances 1 and 2,
-    which is what the dual path submits to. Detection failures answer False,
-    since a single bank is correct everywhere and merely leaves throughput on
-    the table on the hardware that could have used two.
+    Defers to the shared runtime, which applies the same fallback itself. Kept
+    as a name here because the log line below is family-specific.
     """
-    try:
-        from omlx.utils.hardware import get_chip_name, parse_chip_info
+    from omlx.patches.qwen35_ane_prefill import ane_instance_count
 
-        return parse_chip_info(get_chip_name())[1] == "Ultra"
-    except Exception:
-        logger.debug("ANE die count undetermined; assuming one", exc_info=True)
-        return False
+    return ane_instance_count() >= 2
 
 
 def enable_gemma4_ane_prefill(
