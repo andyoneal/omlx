@@ -28,6 +28,10 @@ logger = logging.getLogger(__name__)
 # Dense text and multimodal MLPs share ``__call__(self, x)``, which the shared
 # wrapper's ``patched(self, x, *args, **kwargs)`` already accepts. Resolved
 # leniently: a checkout without mlx-vlm still accelerates the text path.
+#
+# The 12B unified checkpoint needs no entry of its own: its model does
+# ``from ..gemma4.language import LanguageModel``, so its decoder layers carry
+# the second class here already.
 _MLP_MODULES = (
     ("mlx_lm.models.gemma4_text", "MLP"),
     ("mlx_vlm.models.gemma4.language", "MLP"),
@@ -56,8 +60,8 @@ VARIANT_SUPPORT: tuple[dict[str, Any], ...] = (
     {
         "variant": "12B unified",
         "model_type": "gemma4_unified",
-        "supported": False,
-        "reason": "MLP class not yet confirmed against the dispatch tuple.",
+        "supported": True,
+        "reason": "",
     },
     {
         "variant": "E4B / E2B",
