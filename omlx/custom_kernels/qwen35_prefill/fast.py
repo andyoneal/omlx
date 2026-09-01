@@ -388,6 +388,31 @@ def qwen35_ane_profile_set_enabled(enabled: bool) -> bool:
     return True
 
 
+def qwen35_ane_fence_available() -> bool:
+    """Whether the private wait-event surface for device-side ordering resolved."""
+    if _ext is None or not hasattr(_ext, "qwen35_ane_fence_available"):
+        return False
+    return bool(_ext.qwen35_ane_fence_available())
+
+
+def qwen35_ane_fence_set_enabled(enabled: bool) -> bool:
+    """Order the engine behind the pack kernel on the device instead of the host.
+
+    Overrides OMLX_QWEN35_ANE_FENCE for the rest of the process. Settable at
+    runtime so both orderings can be interleaved within one process: engine
+    timings drift across a session by more than this effect, so comparing two
+    processes or two builds cannot resolve it.
+
+    Note that ``ane0_eval_ns`` measures different things in the two arms --
+    engine interval unfenced, submission alone fenced -- so compare
+    ``ane_region_ns`` or wall time.
+    """
+    if _ext is None or not hasattr(_ext, "qwen35_ane_fence_set_enabled"):
+        return False
+    _ext.qwen35_ane_fence_set_enabled(bool(enabled))
+    return True
+
+
 def qwen35_ane_profile_snapshot() -> dict[str, dict[str, float]]:
     if _ext is None or not hasattr(_ext, "qwen35_ane_profile_snapshot"):
         return {}

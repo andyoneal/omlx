@@ -126,6 +126,55 @@ bool ane_compile_cache_enabled() {
   return enabled;
 }
 
+// Device-side GPU->ANE ordering. A request can carry a wait on a Metal shared
+// event, so the engine starts when the pack kernel signals it rather than when
+// the host observes the pack command buffer complete — removing one blocking
+// round trip per dispatch. The override mirrors the profiling gate because the
+// two orderings can only be compared interleaved inside one process; a static
+// read of the environment alone would force a process-per-arm comparison, and
+// engine timings drift between processes by more than this effect.
+std::atomic<int> g_ane_fence_override{-1};
+
+bool ane_fence_enabled() {
+  const int override = g_ane_fence_override.load(std::memory_order_relaxed);
+  if (override >= 0) {
+    return override != 0;
+  }
+  static const bool enabled = [] {
+    const char *value = std::getenv("OMLX_QWEN35_ANE_FENCE");
+    return value && std::strcmp(value, "1") == 0;
+  }();
+  return enabled;
+}
+
+// The wait-event surface is private and undocumented, so treat its absence as
+// ordinary rather than exceptional: a runtime missing any part of it keeps the
+// host round trip. This mirrors is_nax_available() in intent, but asks a
+// different question — NAX gates on the hardware, this gates on whether this
+// OS build still exposes these classes and selectors.
+bool ane_fence_surface_available() {
+  static const bool available = [] {
+    load_ane_framework();
+    Class wait_class = NSClassFromString(@"_ANESharedWaitEvent");
+    Class events_class = NSClassFromString(@"_ANESharedEvents");
+    Class request_class = NSClassFromString(@"_ANERequest");
+    if (!wait_class || !events_class || !request_class) {
+      return false;
+    }
+    return [wait_class respondsToSelector:@selector(waitEventWithValue:
+                                                        sharedEvent:)] &&
+           [wait_class instancesRespondToSelector:@selector(setValue:)] &&
+           [events_class
+               respondsToSelector:@selector(sharedEventsWithSignalEvents:
+                                                          waitEvents:)] &&
+           [request_class
+               instancesRespondToSelector:@selector(setSharedEvents:)] &&
+           [request_class
+               instancesRespondToSelector:@selector(setCompletionHandler:)];
+  }();
+  return available;
+}
+
 NSString *ane_compile_cache_root_directory() {
   NSArray *roots = NSSearchPathForDirectoriesInDomains(
       NSCachesDirectory, NSUserDomainMask, YES);
@@ -871,6 +920,7 @@ public:
       if (!request_) {
         throw std::runtime_error("ANE request creation failed.");
       }
+      attach_fence_surface();
     }
   }
 
@@ -973,6 +1023,7 @@ public:
       if (!request_) {
         throw std::runtime_error("ANE request creation failed.");
       }
+      attach_fence_surface();
     }
   }
 
@@ -1035,6 +1086,7 @@ public:
       if (!request_) {
         throw std::runtime_error("ANE procedure request creation failed.");
       }
+      attach_fence_surface();
     }
   }
 
@@ -1051,6 +1103,18 @@ public:
             model_, @selector(unloadWithQoS:error:), 21, &error);
       }
       remove_ane_staging_directory(directory_, cache_lock_entry_);
+      // Drop the request's own reference to the completion handler before the
+      // request goes away: the handler captures this Impl, and the wait above
+      // is what normally guarantees no dispatch is still in flight.
+      if (fence_capable_ && request_) {
+        ((void (*)(id, SEL, id))objc_msgSend)(
+            request_, @selector(setCompletionHandler:), nil);
+        ((void (*)(id, SEL, id))objc_msgSend)(request_,
+                                              @selector(setSharedEvents:), nil);
+      }
+      [fence_handler_ release];
+      [fence_events_ release];
+      [fence_wait_event_ release];
       [request_ release];
       [execution_options_ release];
       [event_ release];
@@ -1105,10 +1169,148 @@ public:
     id<MTLCommandBuffer> buffer =
         (__bridge id<MTLCommandBuffer>)(static_cast<void *>(command_buffer));
     [buffer encodeSignalEvent:event_ value:ready];
-    return {ready, done};
+    return {ready, done, fence_capable_ && ane_fence_enabled()};
+  }
+
+  // Build the wait event and the container the request reads it from, once per
+  // program, and copy the completion handler that retires a fenced ticket.
+  //
+  // The handler is what makes this ordering usable: attaching shared events
+  // turns -evaluateWithQoS:options:request:error: asynchronous, so its BOOL
+  // reports only that the request was accepted and says nothing about the
+  // engine. The handler's own BOOL is the engine outcome. A nil handler faults
+  // inside the framework's completion thread, so it is never left unset on a
+  // fenced dispatch.
+  //
+  // Its signature is ^(BOOL, void *): a one-byte outcome, not an NSError.
+  // Reading the first argument as an object pointer would dereference a BOOL
+  // on the framework's completion thread. The second argument arrives non-null
+  // even when perfStats: is nil, so its type is unconfirmed and nothing here
+  // touches it.
+  void attach_fence_surface() {
+    if (!ane_fence_surface_available() || !request_ || !event_) {
+      return;
+    }
+    Class wait_class = NSClassFromString(@"_ANESharedWaitEvent");
+    Class events_class = NSClassFromString(@"_ANESharedEvents");
+    // The value is mutable in place, so one wait event serves every dispatch
+    // rather than being rebuilt: begin() admits one dispatch at a time per
+    // program, and the driver reads the event arrays when it processes the
+    // request, not when they are attached.
+    id wait_event = ((id (*)(Class, SEL, uint64_t, id))objc_msgSend)(
+        wait_class, @selector(waitEventWithValue:sharedEvent:), 0ULL,
+        (id)event_);
+    if (!wait_event) {
+      return;
+    }
+    id events = ((id (*)(Class, SEL, id, id))objc_msgSend)(
+        events_class, @selector(sharedEventsWithSignalEvents:waitEvents:), nil,
+        @[ wait_event ]);
+    if (!events) {
+      return;
+    }
+    void (^handler)(BOOL, void *) = ^(BOOL engine_ok, void *opaque) {
+      (void)opaque;
+      complete_fenced(engine_ok);
+    };
+    fence_handler_ = [handler copy];
+    fence_wait_event_ = [wait_event retain];
+    fence_events_ = [events retain];
+    fence_capable_ = true;
+  }
+
+  // Retire a fenced ticket from the framework's completion thread. Mirrors the
+  // tail of the synchronous path: latch any failure, balance the counters,
+  // publish the done value so the merge encoder's wait is satisfied, and wake
+  // whoever is in wait().
+  void complete_fenced(bool engine_ok) {
+    const uint64_t done = inflight_done_.load(std::memory_order_relaxed);
+    {
+      std::lock_guard<std::mutex> lock(state_mutex_);
+      if (!engine_ok && completion_error_.empty()) {
+        completion_error_ = "ANE evaluation reported failure through its "
+                            "completion handler";
+      }
+      ++completed_;
+    }
+    [event_ setSignaledValue:done];
+    completion_cv_.notify_all();
+  }
+
+  // Submit with the engine ordered behind the pack kernel by the driver rather
+  // than by the host. There is no readiness spin here: the request carries a
+  // wait on (event_, ready), so the engine starts when the pack kernel's
+  // encoded signal lands and the host never observes the pack buffer.
+  //
+  // The wait value is published before the request is submitted, so the driver
+  // never holds a request whose wait value changes underneath it — mutating a
+  // value the engine is already waiting on is untested. begin() admitting one
+  // dispatch at a time per program is what keeps that ordering true.
+  void evaluate_fenced(AneLinearModel::Ticket ticket) {
+    inflight_done_.store(ticket.done, std::memory_order_relaxed);
+    ((void (*)(id, SEL, uint64_t))objc_msgSend)(
+        fence_wait_event_, @selector(setValue:), ticket.ready);
+    ((void (*)(id, SEL, id))objc_msgSend)(
+        request_, @selector(setSharedEvents:), fence_events_);
+    ((void (*)(id, SEL, id))objc_msgSend)(
+        request_, @selector(setCompletionHandler:), fence_handler_);
+    NSError *error = nil;
+    BOOL accepted = false;
+    {
+      // Submission only. Because the evaluation is asynchronous here, this
+      // lock no longer spans engine execution as it does on the synchronous
+      // path. What still keeps one dispatch per shared program in flight is
+      // the host wait before the merge; removing that remaining round trip
+      // has to revisit this.
+      std::unique_lock<std::mutex> program_lock;
+      if (shared_program_) {
+        program_lock = std::unique_lock<std::mutex>(
+            shared_program_->evaluation_mutex_);
+      }
+      accepted =
+          ((BOOL (*)(id, SEL, unsigned int, id, id, NSError **))objc_msgSend)(
+              model_, @selector(evaluateWithQoS:options:request:error:), 21,
+              execution_options_, request_, &error);
+    }
+    if (!accepted) {
+      // Rejected at submission, so the completion handler will never run and
+      // nothing else will retire this ticket.
+      {
+        std::lock_guard<std::mutex> lock(state_mutex_);
+        completion_error_ = error_text(@"ANE evaluation failed", error);
+        ++completed_;
+      }
+      [event_ setSignaledValue:ticket.done];
+      completion_cv_.notify_all();
+    }
+  }
+
+  // Release a fenced request whose pack kernel failed. Its encoded ready
+  // signal will never fire, so the queued request would otherwise sit in the
+  // driver waiting on a value that never arrives. Publishing ready lets the
+  // engine run on whatever the input surface holds and retire the ticket
+  // through its own completion handler; the dispatch site fails the operation
+  // on the buffer's status before the merge consumes any of it. The program is
+  // deliberately not latched: a failed pack buffer is a per-submission
+  // failure, typically a request abort tearing down Metal state mid-prefill.
+  void release_fence_wait(AneLinearModel::Ticket ticket) {
+    [event_ setSignaledValue:ticket.ready];
   }
 
   void evaluate_and_signal(AneLinearModel::Ticket ticket) {
+    if (ticket.fenced) {
+      evaluate_fenced(ticket);
+      return;
+    }
+    if (fence_capable_) {
+      // A previous dispatch on this program may have attached them. The
+      // synchronous path must not also receive an asynchronous completion
+      // callback, which would retire this ticket twice.
+      ((void (*)(id, SEL, id))objc_msgSend)(request_,
+                                            @selector(setSharedEvents:), nil);
+      ((void (*)(id, SEL, id))objc_msgSend)(
+          request_, @selector(setCompletionHandler:), nil);
+    }
     const auto deadline = std::chrono::steady_clock::now() + ane_wait_timeout();
     while ([event_ signaledValue] < ticket.ready) {
       if (std::chrono::steady_clock::now() >= deadline) {
@@ -1148,8 +1350,13 @@ public:
       ++completed_;
     }
     // A CPU-side MTLSharedEvent signal wakes the independent merge command
-    // buffer without imposing ANE's private request-wide shared-event fence,
-    // which serializes concurrent GPU work on current macOS drivers.
+    // buffer. The request-wide shared-event alternative does not serialize
+    // concurrent GPU work, contrary to what this path assumed: a 32-64 MB blit
+    // on its own queue runs within 4% of its unfenced time while a fenced
+    // request sits pending, against the ~90% inflation that claim predicts,
+    // and agentMask does not change it. What the host signal actually buys
+    // here is the synchronous evaluation this path is built around; attaching
+    // events instead returns at submission. See evaluate_fenced().
     [event_ setSignaledValue:ticket.done];
     completion_cv_.notify_all();
   }
@@ -1238,6 +1445,12 @@ public:
   id<MTLBuffer> output_buffer_ = nil;
   id<MTLSharedEvent> event_ = nil;
   id request_ = nil;
+  id fence_wait_event_ = nil;
+  id fence_events_ = nil;
+  id fence_handler_ = nil;
+  bool fence_capable_ = false;
+  // Written before submission, read on the framework's completion thread.
+  std::atomic<uint64_t> inflight_done_{0};
   NSDictionary *execution_options_ = nil;
   uint64_t next_event_value_ = 1;
   uint64_t submitted_ = 0;
@@ -1275,6 +1488,9 @@ void AneLinearModel::wait(AneLinearModel::Ticket ticket) {
 }
 void AneLinearModel::cancel_ticket(AneLinearModel::Ticket ticket) {
   impl_->cancel_ticket(ticket);
+}
+void AneLinearModel::release_fence_wait(AneLinearModel::Ticket ticket) {
+  impl_->release_fence_wait(ticket);
 }
 void AneLinearModel::warmup() {
   @autoreleasepool {
@@ -1401,6 +1617,20 @@ bool qwen35_ane_available() {
 
 void qwen35_ane_profile_set_enabled(bool enabled) {
   g_ane_profile_override.store(enabled ? 1 : 0, std::memory_order_relaxed);
+}
+
+void qwen35_ane_fence_set_enabled(bool enabled) {
+  g_ane_fence_override.store(enabled ? 1 : 0, std::memory_order_relaxed);
+}
+
+bool qwen35_ane_fence_available() {
+  @autoreleasepool {
+    try {
+      return ane_fence_surface_available();
+    } catch (...) {
+      return false;
+    }
+  }
 }
 
 void qwen35_ane_profile_reset() {
@@ -2370,23 +2600,49 @@ public:
     // detached evaluation thread takes ownership (finding C1).
     AneDispatchGuard ane_guard(producer_buffer, model_, ticket);
 
+    const bool fenced = ticket.fenced;
+    if (fenced) {
+      // The driver orders the engine behind this buffer, so the host does not
+      // observe it here at all — this is the round trip the fenced ordering
+      // exists to remove. A failed buffer never fires its encoded ready
+      // signal, which would leave the queued request waiting in the driver on
+      // a value that never arrives, so publish that value from the completion
+      // handler and let the status check after the join fail the operation
+      // before the merge reads anything.
+      //
+      // Installed before the commit below: Metal asserts on a completed
+      // handler added after a command buffer is committed.
+      id<MTLCommandBuffer> pack_buffer =
+          (__bridge id<MTLCommandBuffer>)(static_cast<void *>(producer_buffer));
+      auto fence_model = model_;
+      [pack_buffer addCompletedHandler:^(id<MTLCommandBuffer> completed) {
+        if (completed.status == MTLCommandBufferStatusError) {
+          fence_model->release_fence_wait(ticket);
+        }
+      }];
+    }
     // Submit the pack-and-signal buffer before encoding the GPU remainder.
     // On current Metal drivers, a shared-event signal embedded midway through
     // one command buffer is not made visible to ANE early enough to overlap
     // reliably with later GPU encoders in that same buffer.
     encoder.commit();
-    // The public shared-event counter is also delivered late on this driver
-    // when later GPU work is queued. Since packing is a short prerequisite for
-    // both devices, complete it up front; the expensive ANE and qmm stages are
-    // still launched concurrently below.
-    producer_buffer->waitUntilCompleted();
-    if (pack_buffer_failed(producer_buffer)) {
-      // ane_guard releases the buffer and cancels the ticket on unwind.
-      throw std::runtime_error(pack_buffer_error(producer_buffer));
+    if (!fenced) {
+      // The public shared-event counter is also delivered late on this driver
+      // when later GPU work is queued. Since packing is a short prerequisite
+      // for both devices, complete it up front; the expensive ANE and qmm
+      // stages are still launched concurrently below.
+      producer_buffer->waitUntilCompleted();
+      if (pack_buffer_failed(producer_buffer)) {
+        // ane_guard releases the buffer and cancels the ticket on unwind.
+        throw std::runtime_error(pack_buffer_error(producer_buffer));
+      }
+      producer_buffer->release();
+      ane_guard.producer_released();
     }
-    producer_buffer->release();
-    ane_guard.producer_released();
     if (profiling) {
+      // Fenced, this measures the encode and submit alone; the host no longer
+      // waits for the pack to land, so a near-zero reading here is the round
+      // trip's absence rather than a broken counter.
       profile_add(profile_category, kPackNs,
                   profile_now_ns() - operation_start);
     }
@@ -2467,6 +2723,13 @@ public:
       if (profiling) {
         const uint64_t end = profile_now_ns();
         profile_add(profile_category, kAne0LaunchNs, start - launch);
+        // Unfenced this is the engine interval, because the evaluation is
+        // synchronous. Fenced it is the submission alone: attaching shared
+        // events makes the call return once the request is accepted, so this
+        // counter drops to a fraction of the engine time while nothing about
+        // the engine has changed. It is therefore not comparable between the
+        // two orderings — compare ane_region_ns, which spans the whole
+        // launch-to-join window in both, or operation wall time.
         profile_add(profile_category, kAne0EvalNs, end - start);
       }
     }).detach();
@@ -2489,14 +2752,30 @@ public:
       // immediately exposes asynchronous ANE failures before the merge is
       // encoded.
       model_->wait(ticket);
+      if (fenced) {
+        // The engine has completed, so the pack buffer has too: the engine
+        // could not start before its ready signal landed, and a failed buffer
+        // publishes that value from its completion handler. Checking here
+        // rather than up front is what removed the round trip, and it still
+        // fails the operation before the merge consumes the output.
+        if (pack_buffer_failed(producer_buffer)) {
+          throw std::runtime_error(pack_buffer_error(producer_buffer));
+        }
+      }
     } catch (...) {
       // The committed qmm buffer references MLX arrays owned by this frame;
       // drain it before unwinding so the allocator cannot recycle them while
       // the GPU is still writing. The detached ANE thread holds its own
       // model reference and signals the ticket on its own.
+      if (fenced) {
+        producer_buffer->release();
+      }
       [qmm_buffer waitUntilCompleted];
       [qmm_buffer release];
       throw;
+    }
+    if (fenced) {
+      producer_buffer->release();
     }
     // ANE completion does not order an independently committed GPU suffix
     // command buffer before the merge encoder. This is observable on the
@@ -2731,8 +3010,16 @@ public:
       producer_buffer->release();
       throw;
     }
-    const auto ticket0 = tickets.first;
-    const auto ticket1 = tickets.second;
+    // Opt this path out of device-side ordering whatever the gate says, so it
+    // stays exactly as it was. Releasing two engines from one pack buffer
+    // means two wait events and two tickets to retire from a single pack
+    // failure; until that is implemented, an unfenced ticket here keeps the
+    // synchronous evaluation this path was measured with rather than taking
+    // the asynchronous submission with none of its benefit.
+    auto ticket0 = tickets.first;
+    auto ticket1 = tickets.second;
+    ticket0.fenced = false;
+    ticket1.fenced = false;
     // Cancel both tickets and free the buffer if anything below throws before
     // the detached evaluation threads take ownership (finding C1).
     AneDispatchGuard ane_guard(producer_buffer, model0_, ticket0, model1_,
@@ -3091,6 +3378,13 @@ public:
       producer_buffer->release();
       throw;
     }
+    // Opt this path out of device-side ordering whatever the gate says, so it
+    // stays exactly as it was. It shares a pack buffer between one or two
+    // engines and a fused merge; releasing them from the device needs the same
+    // two-ticket failure handling the dual path does, so keep the synchronous
+    // evaluation rather than taking an asynchronous one with no benefit.
+    ticket.fenced = false;
+    ticket1.fenced = false;
     // Cancel the tickets and free the buffer if anything below throws before
     // the detached evaluation threads take ownership (finding C1).
     AneDispatchGuard ane_guard(producer_buffer, model_, ticket, model1_,
