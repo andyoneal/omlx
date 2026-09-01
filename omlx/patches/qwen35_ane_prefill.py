@@ -48,8 +48,7 @@ def ane_instance_count() -> int:
     Only Ultra parts present two, as instance hints 1 and 2. Detection failures
     answer one, which is the safe direction: an unpinned dispatch runs
     everywhere, while a hint naming an instance the machine does not have is
-    range-checked against the engine count by the private selector and
-    rejected rather than clamped.
+    refused rather than clamped wherever the key is read.
     """
     try:
         from omlx.utils.hardware import get_chip_name, parse_chip_info
@@ -69,8 +68,8 @@ def dual_instance_hints() -> tuple[int, int]:
     being configured, but neither names an instance. That matches what the
     machine actually does today -- an unknown option-dict key is never read, so
     the pin is already inert on one die -- while not depending on it staying
-    unread. The hint is range-checked against the engine count where it is
-    honoured, and rejected rather than clamped.
+    unread. Where the key is read, a hint the machine cannot satisfy is
+    refused rather than clamped.
     """
     return (1, 2) if ane_instance_count() >= 2 else (0, 0)
 

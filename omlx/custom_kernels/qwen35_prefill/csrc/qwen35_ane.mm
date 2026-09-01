@@ -747,10 +747,11 @@ NSDictionary *ane_execution_options(int ane_instance) {
   if (ane_instance == 0) {
     return @{};
   }
-  // No shipping Apple silicon exposes more than two ANE instances, and the
-  // private instance selector range-checks the hint against the engine count
-  // and rejects rather than clamps it. Refusing an impossible hint here fails
-  // it in this path, with a message, rather than as a driver error on whatever
+  // No shipping Apple silicon exposes more than two ANE instances, and a hint
+  // the machine cannot satisfy is refused rather than clamped where the key is
+  // honoured -- how the runtime decides that is not established, so this does
+  // not depend on a particular rule. Refusing an impossible hint here fails it
+  // in this path, with a message, rather than as a driver error on whatever
   // runtime begins honouring the option key.
   if (ane_instance < 1 || ane_instance > 2) {
     throw std::invalid_argument("ANE instance hint must be 1 or 2.");
