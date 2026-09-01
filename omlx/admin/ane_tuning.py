@@ -129,6 +129,10 @@ class ANETuningRun:
     # Smallest gdn_fraction whose aligned ANE slice covers the z projection
     # on the calibrated checkpoint; None when GDN is absent (issue #2899).
     gdn_floor: float | None = None
+    # Which per-model settings family installs the patch for this checkpoint.
+    # Resolved from the staged model rather than the request, and defaulting to
+    # the Qwen names so a detection failure keeps the historical behaviour.
+    family: str = "qwen35"
     task: asyncio.Task | None = None
     created_at: float = field(default_factory=time.time)
     deadline: float | None = None
@@ -161,6 +165,16 @@ _HEADROOM_GRID_SHARES = (0.55, 0.70, 0.85, 1.0)
 _MIN_TUNABLE_FRACTION = 0.05
 
 
+# Shares to compile on hardware without NAX. The span matters more than the
+# resolution: the profile refinement below corrects one step from the winner,
+# so a grid that brackets the optimum beats a dense grid that misses it. A
+# 31B dense checkpoint on an M1 Max peaks near 0.20 and loses roughly half its
+# throughput by 0.30, which a grid starting at 0.40 cannot express at all —
+# every value it offers sits past the drop, so the tuner concludes the offload
+# is worthless. Five values, as before, so a run costs no more than it did.
+_NON_NAX_GRID = [0.10, 0.20, 0.30, 0.40, 0.53]
+
+
 def _fraction_grid(ceiling: float | None = None) -> list[float]:
     """ANE widths worth compiling into the representative calibration bank.
 
@@ -175,9 +189,9 @@ def _fraction_grid(ceiling: float | None = None) -> list[float]:
         if is_nax_available():
             grid = [0.15, 0.25, 0.35, 0.45, 0.53]
         else:
-            grid = [0.40, 0.45, 0.50, 0.53, 0.60]
+            grid = _NON_NAX_GRID
     except Exception:
-        grid = [0.40, 0.45, 0.50, 0.53, 0.60]
+        grid = _NON_NAX_GRID
     if ceiling is None:
         return grid
     fits = [value for value in grid if value <= ceiling]
@@ -498,9 +512,43 @@ async def _measure_result_slot(
         _refresh_speedups(run)
 
 
-def _settings_for_candidate(base: Any, request: ANETuningRequest, candidate: _Candidate):
+def _settings_family(model: Any) -> str:
+    """Which per-model settings family installs the ANE path for this model.
+
+    The kernels, bank ladder, eligibility predicates and calibration are shared
+    and carry Qwen names throughout, which is deliberate. What is not shared is
+    the per-model settings key the engine installs the patch from: Gemma 4 is
+    gated on ``gemma4_ane_prefill_enabled`` and Qwen on
+    ``qwen35_ane_prefill_enabled``. A candidate whose settings name the wrong
+    family compiles a bank, installs nothing, and measures GPU-only throughput
+    as though it were an ANE result.
+    """
+    names = [getattr(type(model), "__module__", "") or ""]
+    language = getattr(model, "language_model", None)
+    if language is not None:
+        names.append(getattr(type(language), "__module__", "") or "")
+    return "gemma4" if any("gemma4" in name.lower() for name in names) else "qwen35"
+
+
+def _settings_for_candidate(
+    base: Any,
+    request: ANETuningRequest,
+    candidate: _Candidate,
+    family: str = "qwen35",
+):
     settings = replace(base)
-    settings.qwen35_ane_prefill_enabled = candidate.enabled
+    # Both families' flags are written on every candidate, not just the one
+    # being tuned. Leaving the other family at its saved value would let a
+    # GPU-only baseline load with the ANE already enabled, and the comparison
+    # would be against itself.
+    gemma4 = family == "gemma4"
+    settings.gemma4_ane_prefill_enabled = bool(candidate.enabled and gemma4)
+    if gemma4:
+        settings.gemma4_ane_prefill_sequence_length = request.sequence_length
+        settings.gemma4_ane_prefill_tail_padding_min_tokens = 0
+        if candidate.mlp_fraction is not None:
+            settings.gemma4_ane_prefill_fraction = candidate.mlp_fraction
+    settings.qwen35_ane_prefill_enabled = bool(candidate.enabled and not gemma4)
     settings.qwen35_ane_prefill_sequence_length = request.sequence_length
     if candidate.backend == "k2":
         settings.qwen35_ane_prefill_fraction = candidate.mlp_fraction or 1 / 3
@@ -640,7 +688,9 @@ async def _measure_candidate(
     base_settings: Any,
     candidate: _Candidate,
 ) -> dict[str, Any]:
-    settings = _settings_for_candidate(base_settings, run.request, candidate)
+    settings = _settings_for_candidate(
+        base_settings, run.request, candidate, run.family
+    )
     _check_k2_budget(run)
     run.message = f"Loading {candidate.label}…"
     engine = await engine_pool.get_engine(
@@ -2213,12 +2263,21 @@ async def run_tuning(run: ANETuningRun, engine_pool: Any) -> None:
             run, _GPU_SLOT, engine_pool, base_settings, baseline
         )
 
-        gpu_settings = _settings_for_candidate(base_settings, run.request, baseline)
+        gpu_settings = _settings_for_candidate(
+            base_settings, run.request, baseline, run.family
+        )
         engine = await engine_pool.get_engine(
             run.request.model_id,
             force_lm=True,
             runtime_settings=gpu_settings,
         )
+        # Resolve the settings family from the staged model, before any
+        # candidate is built. The baseline above needs no family — it disables
+        # both — but every candidate after this point does.
+        try:
+            run.family = _settings_family(_loaded_model(engine))
+        except Exception:
+            logger.debug("ANE settings family detection failed", exc_info=True)
         active_slot = _GATE_SLOT
         choice = await _calibrate_components(run, engine, base_settings)
         # Release the calibration engine before staging the verify engine:

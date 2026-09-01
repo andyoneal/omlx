@@ -1079,20 +1079,36 @@ async def test_cancelled_tuning_stays_active_until_unload_finishes(monkeypatch):
     assert ane_tuning.get_active_run() is None
 
 
-def test_fraction_grid_keeps_only_widths_that_fit_the_headroom(monkeypatch):
-    monkeypatch.setattr(ane_tuning, "_fraction_grid", ane_tuning._fraction_grid)
-    assert ane_tuning._fraction_grid(0.52) == [0.40, 0.45, 0.50]
+def test_fraction_grid_keeps_only_widths_that_fit_the_headroom():
+    """Widths above the ceiling are dropped rather than resampled.
+
+    Expressed against the grid the module actually offers, so that retuning
+    those shares stays a judgement about hardware and does not have to be
+    mirrored here to keep the filter under test.
+    """
+    base = ane_tuning._fraction_grid(None)
+    ceiling = base[-2]
+
+    assert ane_tuning._fraction_grid(ceiling) == [
+        fraction for fraction in base if fraction <= ceiling
+    ]
 
 
 def test_fraction_grid_samples_below_a_ceiling_no_fixed_width_reaches():
     """Otherwise the tuner reports one failure per width instead of tuning."""
-    grid = ane_tuning._fraction_grid(0.30)
+    base = ane_tuning._fraction_grid(None)
+    # Below the smallest fixed width, so the sampling path is the only way to
+    # produce a grid at all. Anchored to the grid rather than a literal: a
+    # ceiling that some fixed width happens to clear would leave this test
+    # passing without ever reaching the branch it is named for.
+    ceiling = round(min(base) - 0.01, 3)
+    grid = ane_tuning._fraction_grid(ceiling)
 
     assert grid
     assert grid == sorted(grid)
-    assert max(grid) <= 0.30
-    assert min(grid) >= 0.05
-    assert not set(grid) & {0.40, 0.45, 0.50, 0.53, 0.60}
+    assert max(grid) <= ceiling
+    assert min(grid) >= ane_tuning._MIN_TUNABLE_FRACTION
+    assert not set(grid) & set(base)
 
 
 def test_fraction_grid_without_a_ceiling_is_unchanged():
