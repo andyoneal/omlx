@@ -125,6 +125,10 @@ class ANETuningRun:
     # Resolved from the staged model rather than the request, and defaulting to
     # the Qwen names so a detection failure keeps the historical behaviour.
     family: str = "qwen35"
+    # Shares the staged checkpoint's geometry can actually compile, filled in
+    # once the model is staged. Empty until then, and empty for a geometry the
+    # lattice cannot be read from, which leaves the fixed ladders in place.
+    legal_fractions: list[float] = field(default_factory=list)
     task: asyncio.Task | None = None
     created_at: float = field(default_factory=time.time)
 
@@ -135,6 +139,72 @@ class ANETuningRun:
 _HEADROOM_GRID_MARGIN = 0.90
 _HEADROOM_GRID_SHARES = (0.55, 0.70, 0.85, 1.0)
 _MIN_TUNABLE_FRACTION = 0.05
+# Matches the enable-time clamp in qwen35_ane_prefill, so no width the tuner
+# recommends is one the next load refuses.
+_MAX_TUNABLE_FRACTION = 0.90
+
+
+def _mlp_fraction_lattice(output_dim: int, alignment: int) -> list[float]:
+    """Offload shares this geometry can actually compile, ascending.
+
+    The patch floors a requested share to a whole number of ``alignment``
+    channels (``_prepare_pair_for_bank``), so a share names a program only by
+    accident: the settings that exist are a lattice of step
+    ``alignment / output_dim``. That step is 0.42% on the 12B's 15,360 hidden
+    channels and 6.06% on the 26B A4B's 2,112, which is why sampling in
+    fractions cannot be right for both -- the same decimals that under-resolve
+    a wide geometry compile the same program twice on a narrow one.
+
+    ``alignment`` is 128 when dual-ANE is requested and 64 otherwise. Assuming
+    128 is safe when the patch turns out to use 64, since every multiple of 128
+    is a multiple of 64; the reverse would offer widths that get floored away.
+    """
+    if output_dim <= 0 or alignment <= 0:
+        return []
+    shares = (
+        _lattice_share(width, output_dim)
+        for width in range(alignment, output_dim, alignment)
+    )
+    return [
+        share
+        for share in shares
+        if _MIN_TUNABLE_FRACTION <= share <= _MAX_TUNABLE_FRACTION
+    ]
+
+
+def _lattice_share(width: int, output_dim: int) -> float:
+    """The share to request in order to compile exactly ``width`` channels.
+
+    Half a channel above the true share rather than on it, because the patch
+    floors ``int(output_dim * fraction)`` and the exact quotient is not always
+    representable: 0.5125 on 15,360 evaluates to 7871.999999999999, which
+    floors to 7,808 and loses a whole 64-channel block. Offsetting into the
+    middle of the rung costs 0.5 of a channel in the reported share -- 0.003%
+    on the 12B -- and makes every share the tuner can name one the model
+    reproduces exactly.
+    """
+    return (width + 0.5) / output_dim
+
+
+def _snap_to_lattice(
+    fractions: list[float], output_dim: int, alignment: int
+) -> list[float]:
+    """Rewrite each share as the one naming the width it actually compiles.
+
+    Flooring to the rung, rather than to the nearest lattice member, is what
+    the patch itself does, so a share the tuner reports is a share the next
+    load reproduces. Duplicates collapse: two requests that compile one
+    program are one candidate, not two.
+    """
+    if output_dim <= 0 or alignment <= 0:
+        return sorted(set(fractions))
+    snapped = set()
+    for value in fractions:
+        width = (int(output_dim * value) // alignment) * alignment
+        share = _lattice_share(max(width, alignment), output_dim)
+        if _MIN_TUNABLE_FRACTION <= share <= _MAX_TUNABLE_FRACTION:
+            snapped.add(share)
+    return sorted(snapped) or sorted(set(fractions))
 
 
 # Shares to compile on hardware without NAX. The span matters more than the
@@ -181,7 +251,7 @@ def _fraction_grid(ceiling: float | None = None) -> list[float]:
     fits = [value for value in grid if value <= ceiling]
     if fits:
         return fits
-    top = min(0.90, ceiling * _HEADROOM_GRID_MARGIN)
+    top = min(_MAX_TUNABLE_FRACTION, ceiling * _HEADROOM_GRID_MARGIN)
     sampled = sorted(
         {
             round(top * share, 3)
@@ -897,8 +967,17 @@ def _profile_refinement(
     candidate: _Candidate,
     result: dict[str, Any],
     gdn_floor: float | None = None,
+    legal_fractions: list[float] | None = None,
 ) -> _Candidate:
-    """Use full-model branch completion rates for one bounded correction."""
+    """Use full-model branch completion rates for one bounded correction.
+
+    ``legal_fractions`` is the staged geometry's compilable lattice. The
+    balance point below is solved exactly and then snapped to a member of the
+    choice set, so the choice set decides the resolution of the answer: the
+    fixed ladder resolves to about 5 points of share where the 12B's lattice
+    resolves to 0.42, and it can only name 9 of that geometry's 205 legal
+    widths. Falls back to the ladder when the lattice is unavailable.
+    """
     profile = result.get("_profile") or {}
     mlp = profile.get("mlp") or {}
     gdn = profile.get("gdn") or {}
@@ -919,8 +998,12 @@ def _profile_refinement(
             (
                 [2 * value for value in _fused_fraction_grid()]
                 if candidate.fused_down
-                else sorted(
-                    set([*_fraction_grid(), 0.35, 0.40, 0.465, 0.50, 0.55])
+                else (
+                    list(legal_fractions)
+                    if legal_fractions
+                    else sorted(
+                        set([*_fraction_grid(), 0.35, 0.40, 0.465, 0.50, 0.55])
+                    )
                 )
             )
         ]
@@ -1825,15 +1908,27 @@ def _calibrate_components_sync(
 
     eligible_layers = sum(1 for module in modules if patch._eligible_pair(module))
     ceiling = _headroom_fraction_ceiling(patch, mlp, eligible_layers)
-    if ceiling is not None:
-        narrowed = _fraction_grid(ceiling)
-        if narrowed != run.fractions:
-            logger.info(
-                "ANE tuning: %.2f headroom ceiling narrows the width grid to %s",
-                ceiling,
-                narrowed,
-            )
-            run.fractions = narrowed
+    try:
+        mlp_output_dim = int(mlp.gate_proj.weight.shape[0])
+    except Exception:
+        mlp_output_dim = 0
+    mlp_alignment = 128 if dual_ane else 64
+    run.legal_fractions = _mlp_fraction_lattice(mlp_output_dim, mlp_alignment)
+    narrowed = _snap_to_lattice(
+        _fraction_grid(ceiling), mlp_output_dim, mlp_alignment
+    )
+    if narrowed != run.fractions:
+        logger.info(
+            "ANE tuning: width grid is %s (%s, %d compilable widths)",
+            narrowed,
+            (
+                f"{ceiling:.2f} headroom ceiling"
+                if ceiling is not None
+                else "no headroom ceiling"
+            ),
+            len(run.legal_fractions),
+        )
+        run.fractions = narrowed
 
     gate = mlp.gate_proj
     down = mlp.down_proj
@@ -2296,6 +2391,7 @@ async def run_tuning(run: ANETuningRun, engine_pool: Any) -> None:
             candidate,
             run.results[_VERIFY_SLOT],
             gdn_floor=run.gdn_floor,
+            legal_fractions=run.legal_fractions,
         )
         gdn_profile_changed = any(
             getattr(profiled, name) != getattr(candidate, name)

@@ -539,7 +539,7 @@ async def test_full_model_gdn_correction_precedes_worker_runner_up(monkeypatch):
             alternate_reason="CPU worker count",
         )
 
-    def profile_refinement(candidate, result, gdn_floor=None):
+    def profile_refinement(candidate, result, gdn_floor=None, legal_fractions=None):
         return ane_tuning.replace(
             candidate,
             gdn_fraction=0.45,
@@ -1082,6 +1082,133 @@ def test_fraction_grid_samples_below_a_ceiling_no_fixed_width_reaches():
 
 def test_fraction_grid_without_a_ceiling_is_unchanged():
     assert ane_tuning._fraction_grid() == ane_tuning._fraction_grid(None)
+
+
+_LATTICE_GEOMETRIES = [15360, 21504, 2112, 12288, 11008, 3072]
+
+
+def _compiled_width(output_dim, share, alignment):
+    """What omlx/patches/qwen35_ane_prefill.py:672 makes of a request."""
+    return (int(output_dim * share) // alignment) * alignment
+
+
+def test_lattice_shares_compile_the_width_they_name():
+    """The invariant the lattice exists for, over every share it can offer.
+
+    A share is only worth recommending if the next load reproduces it, and the
+    patch floors rather than rounds -- so a share that names a rung it does not
+    land on costs a whole alignment block, silently.
+    """
+    checked = 0
+    for output_dim in _LATTICE_GEOMETRIES:
+        for alignment in (64, 128):
+            offered = ane_tuning._mlp_fraction_lattice(output_dim, alignment)
+            offered += ane_tuning._snap_to_lattice(
+                ane_tuning._fraction_grid(), output_dim, alignment
+            )
+            for share in offered:
+                width = _compiled_width(output_dim, share, alignment)
+                assert width > 0
+                assert width % alignment == 0
+                # The share sits inside the rung it names, not below it.
+                assert width <= share * output_dim < width + alignment
+                checked += 1
+    assert checked > 1000
+
+
+def test_lattice_share_survives_an_unrepresentable_quotient():
+    """The exact quotient is not always safe, which is why the offset exists.
+
+    15360 * (7872 / 15360) evaluates to 7871.999999999999, so the patch floors
+    it to 7808 and the request loses a 64-channel block. Pinned as a case
+    rather than a principle: it is one of 39 such rungs across the shipped
+    geometries, and none of them announces itself.
+    """
+    output_dim, alignment, width = 15360, 64, 7872
+
+    exact = width / output_dim
+    assert _compiled_width(output_dim, exact, alignment) == width - alignment
+
+    share = ane_tuning._lattice_share(width, output_dim)
+    assert _compiled_width(output_dim, share, alignment) == width
+    # And the offset is invisible at any resolution a human reads.
+    assert round(share, 4) == round(exact, 4)
+
+
+def test_snap_to_lattice_keeps_the_requested_rung():
+    """Snapping must not cost a block on a geometry that was already exact."""
+    assert _compiled_width(15360, 0.60, 64) == 9216
+
+    snapped = ane_tuning._snap_to_lattice([0.60], 15360, 64)
+
+    assert len(snapped) == 1
+    assert _compiled_width(15360, snapped[0], 64) == 9216
+
+
+def test_snap_to_lattice_collapses_requests_that_compile_one_program():
+    """Two shares that name one program are one candidate, not two.
+
+    On the 26B A4B's 2,112-channel experts the dual-ANE lattice step is 6.06%,
+    so the fixed ladder's 0.55 and 0.60 both compile 1,152 channels. Left
+    un-collapsed that spends two calibration compiles to measure one width and
+    lets a tuner look converged when it ran out of distinct candidates.
+    """
+    assert _compiled_width(2112, 0.55, 128) == _compiled_width(2112, 0.60, 128)
+
+    snapped = ane_tuning._snap_to_lattice([0.55, 0.60], 2112, 128)
+
+    assert len(snapped) == 1
+    assert _compiled_width(2112, snapped[0], 128) == 1152
+
+
+def test_snap_to_lattice_passes_shares_through_without_a_geometry():
+    """An unreadable geometry leaves the fixed grid exactly as it was."""
+    grid = ane_tuning._fraction_grid()
+
+    assert ane_tuning._snap_to_lattice(grid, 0, 64) == sorted(set(grid))
+    assert ane_tuning._mlp_fraction_lattice(0, 64) == []
+
+
+def test_profile_refinement_snaps_the_balance_point_to_the_lattice(monkeypatch):
+    """The balance point is solved exactly; the choice set sets its resolution.
+
+    Same arms as the no-CPU rebalance test above, whose ladder answer is 0.35.
+    The analytic optimum is 5,296 channels of 15,360; the ladder's nearest
+    offer compiles 5,376 and the lattice's compiles 5,312, so the correction
+    lands five times closer without costing a compile.
+    """
+    monkeypatch.setattr(
+        ane_tuning, "_fraction_grid", lambda: [0.4, 0.45, 0.5, 0.53, 0.6]
+    )
+    candidate = ane_tuning._Candidate("predicted", True, 0.5, False, None)
+    operations = 192
+    result = {
+        "_profile": {
+            "mlp": {
+                "operations": operations,
+                "ane0_eval_ns": 19.0e6 * operations,
+                "ane1_eval_ns": 19.0e6 * operations,
+                "gpu_completion_ns": 10.0e6 * operations,
+            }
+        }
+    }
+    lattice = ane_tuning._mlp_fraction_lattice(15360, 64)
+
+    ladder = ane_tuning._profile_refinement(candidate, result)
+    refined = ane_tuning._profile_refinement(
+        candidate, result, legal_fractions=lattice
+    )
+
+    # The optimum this arm implies, recomputed rather than asserted as a magic
+    # number: ANE and GPU rates balance at ane / (ane + gpu) of the width.
+    ane_rate = 0.5 / 19.0
+    gpu_rate = 0.5 / 10.0
+    optimum = ane_rate / (ane_rate + gpu_rate)
+
+    assert refined.mlp_fraction in lattice
+    assert _compiled_width(15360, refined.mlp_fraction, 64) == 5312
+    assert _compiled_width(15360, ladder.mlp_fraction, 64) == 5376
+    assert abs(refined.mlp_fraction - optimum) < abs(ladder.mlp_fraction - optimum)
 
 
 def test_headroom_ceiling_is_none_when_memory_cannot_be_measured():
