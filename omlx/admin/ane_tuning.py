@@ -171,8 +171,20 @@ _MIN_TUNABLE_FRACTION = 0.05
 # 31B dense checkpoint on an M1 Max peaks near 0.20 and loses roughly half its
 # throughput by 0.30, which a grid starting at 0.40 cannot express at all —
 # every value it offers sits past the drop, so the tuner concludes the offload
-# is worthless. Five values, as before, so a run costs no more than it did.
-_NON_NAX_GRID = [0.10, 0.20, 0.30, 0.40, 0.53]
+# is worthless.
+#
+# The top of the grid has to reach 0.60 for the mirror-image reason. Both
+# single-die parts in the field tuner sweeps settled there — M1 Max 0.6, M2 Max
+# 0.4 and then 0.6 on the fused path — and those are the closest hardware
+# siblings to a single-ANE machine. `_headroom_fraction_ceiling` clamps the
+# grid down for a memory-starved box, but a clamp cannot raise a ceiling, so a
+# grid stopping below 0.60 truncates the search on any machine with the
+# headroom to reach it. 0.53 makes room for it rather than adding a sixth
+# width: it is a shallow dual-die optimum, 0.9% ahead of 0.54 and 1.3% ahead
+# of 0.55, it sits inside the 0.40/0.60 bracket, and the refinement grid
+# offers 0.50 and 0.55 either side of it. Five values, so a run costs no more
+# than it did.
+_NON_NAX_GRID = [0.10, 0.20, 0.30, 0.40, 0.60]
 
 
 def _fraction_grid(ceiling: float | None = None) -> list[float]:

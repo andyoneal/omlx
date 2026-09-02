@@ -36,6 +36,46 @@ def test_nax_fraction_grid_covers_faster_gpu_balance(monkeypatch):
     assert ane_tuning._fraction_grid() == [0.15, 0.25, 0.35, 0.45, 0.53]
 
 
+def test_non_nax_fraction_grid_reaches_the_single_die_field_optimum(monkeypatch):
+    """Both single-die parts in the field tuner sweeps chose 0.60.
+
+    Pinned because `_headroom_fraction_ceiling` narrows the grid downward for a
+    memory-starved box and cannot widen it, so a top below 0.60 is unreachable
+    rather than merely unlikely, and the truncation shows up as a plausible
+    recommendation rather than as an error.
+    """
+    import omlx.custom_kernels.nax as nax
+
+    monkeypatch.setattr(nax, "is_nax_available", lambda: False)
+    grid = ane_tuning._fraction_grid()
+
+    assert grid == [0.10, 0.20, 0.30, 0.40, 0.60]
+    # Every width the tuner can recommend has to clear the enable-time clamp in
+    # qwen35_ane_prefill, or the run ends on a setting the next load refuses.
+    assert all(0.05 <= fraction <= 0.90 for fraction in grid)
+
+
+def test_fused_down_widths_stay_inside_the_fused_loader_limit(monkeypatch):
+    """The fused loader reuses the MLP fraction for down and refuses > 0.50.
+
+    This is what keeps the MLP grid free to reach 0.60: the fused search draws
+    its widths from `_fused_fraction_grid` instead, and the profile refinement
+    swaps in the same grid whenever the candidate has `fused_down` set.
+    """
+    import omlx.custom_kernels.nax as nax
+
+    monkeypatch.setattr(nax, "is_nax_available", lambda: False)
+
+    assert max(ane_tuning._fused_fraction_grid()) <= 0.50
+    assert max(ane_tuning._fraction_grid()) > 0.50
+    # Two per-ANE shares plus the CPU share must total less than 1.0.
+    assert (
+        2 * max(ane_tuning._fused_fraction_grid())
+        + max(ane_tuning._fused_cpu_fraction_grid())
+        < 1.0
+    )
+
+
 def test_cpu_worker_search_space_is_independent_of_saved_settings():
     assert ane_tuning._cpu_thread_grid() == [6, 8, 10, 12, 14, 16]
     assert ane_tuning._COARSE_SAMPLES == 7
