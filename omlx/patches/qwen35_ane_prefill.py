@@ -43,6 +43,19 @@ _ANE_MIN_SEQUENCE_LENGTH = 128
 _ANE_SEQUENCE_LENGTH_ALIGNMENT = 32
 
 
+def _program_table_full(exc: BaseException) -> bool:
+    """Whether the private runtime refused a program because the machine's
+    resident program table is full.
+
+    That table is shared by every process on the machine, so this fires while
+    the model is still inside `_ANE_RESIDENT_PROGRAM_LIMIT` -- the budget
+    counts this model's programs and cannot see anyone else's. It is not a
+    memory failure: it reproduces at 126 resident programs with 15 GB free,
+    and a second process holding 60 leaves only 66.
+    """
+    return "0x50004" in str(exc)
+
+
 def ane_instance_count() -> int:
     """How many physical ANE instances this machine exposes.
 
@@ -3594,6 +3607,7 @@ def enable_qwen35_ane_prefill(
     dual_count = 0
     resident_programs = 0
     mlp_budget_exhausted = False
+    table_full = False
     for module in candidates:
         requested_programs = 2 if dual_ane else 1
         if resident_programs + requested_programs > _ANE_RESIDENT_PROGRAM_LIMIT:
@@ -3601,12 +3615,25 @@ def enable_qwen35_ane_prefill(
             break
         try:
             state = _compile_pair(module, config)
-        except Exception:
+        except Exception as exc:
             module._omlx_ane_prefill_failed = True
-            logger.warning(
-                "Skipping one Qwen MLP after eager ANE compilation failed",
-                exc_info=True,
-            )
+            if _program_table_full(exc):
+                if not table_full:
+                    table_full = True
+                    logger.warning(
+                        "ANE program load refused at %d resident programs "
+                        "(0x50004): the machine's program table is full. It is "
+                        "shared with every other ANE client, so this can happen "
+                        "well inside the %d-program budget. The remaining "
+                        "layers run prefill on GPU",
+                        resident_programs,
+                        _ANE_RESIDENT_PROGRAM_LIMIT,
+                    )
+            else:
+                logger.warning(
+                    "Skipping one Qwen MLP after eager ANE compilation failed",
+                    exc_info=True,
+                )
             continue
         if state is None:
             continue
@@ -3641,12 +3668,24 @@ def enable_qwen35_ane_prefill(
                 continue
             try:
                 state = _compile_gdn(module, gdn_config)
-            except Exception:
+            except Exception as exc:
                 module._omlx_ane_gdn_failed = True
-                logger.warning(
-                    "Skipping one Qwen GDN after eager ANE compilation failed",
-                    exc_info=True,
-                )
+                if _program_table_full(exc):
+                    if not table_full:
+                        table_full = True
+                        logger.warning(
+                            "ANE program load refused at %d resident programs "
+                            "(0x50004): the machine's program table is full "
+                            "and is shared with every other ANE client. The "
+                            "remaining layers run prefill on GPU",
+                            resident_programs,
+                        )
+                else:
+                    logger.warning(
+                        "Skipping one Qwen GDN after eager ANE compilation "
+                        "failed",
+                        exc_info=True,
+                    )
                 continue
             if state is None:
                 continue
