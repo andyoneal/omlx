@@ -155,8 +155,8 @@ def enable_gemma4_ane_prefill(
         # Two banks on one die doubles bank memory and puts two submitting
         # threads on the same device. Treat the setting as "allow dual".
         logger.info(
-            "Gemma 4 ANE prefill: one physical ANE detected, using a single "
-            "procedure bank instead of the requested dual-ANE split"
+            "Gemma 4 ANE prefill: one physical ANE detected, compiling one "
+            "program per layer instead of the requested dual-ANE split"
         )
         dual_ane = False
     return enable_qwen35_ane_prefill(

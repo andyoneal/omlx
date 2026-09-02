@@ -33,9 +33,10 @@ _VLM_GDN_HOOK_INSTALLED = False
 _GDN_MODULES: weakref.WeakValueDictionary[int, Any] = weakref.WeakValueDictionary()
 _GEGLU: Callable[[mx.array, mx.array], mx.array] | None = None
 # Legacy extensions compile one program per slice, and the private runtime on
-# the reference M3 Ultra accepts 120 resident programs. Current extensions pack
-# all slices into one multi-procedure program per ANE instance and bypass this
-# fallback-only budget.
+# the reference M3 Ultra accepts 120 resident programs. The multi-procedure
+# bank only runs when dual_ane is set, so single-ANE hardware compiles one
+# program per layer and this budget is live there rather than a fallback:
+# 60 of the 120 on a 60-layer checkpoint.
 _ANE_RESIDENT_PROGRAM_LIMIT = 120
 
 
