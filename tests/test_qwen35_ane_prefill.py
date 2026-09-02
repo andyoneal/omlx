@@ -662,6 +662,38 @@ def test_install_dispatch_registers_mlx_lm_gdn_backend(monkeypatch):
     assert registrations == [ane_patch._gdn_backend]
 
 
+def test_enable_names_the_shared_table_once_when_program_load_is_refused(
+    monkeypatch, caplog
+):
+    monkeypatch.setattr(fast, "qwen35_ane_available", lambda: True)
+    monkeypatch.setattr(fast, "has_symbol", lambda name: False)
+    monkeypatch.setattr(ane_patch, "_install_dispatch", lambda: True)
+    monkeypatch.setattr(ane_patch, "_eligible_pair", lambda mlp: True)
+
+    def compile_pair(mlp, config):
+        raise RuntimeError("ANE model load failed: Program load failure (0x50004)")
+
+    monkeypatch.setattr(ane_patch, "_compile_pair", compile_pair)
+    model = _Model(4)
+
+    with caplog.at_level(logging.WARNING):
+        count = ane_patch.enable_qwen35_ane_prefill(
+            model, sequence_length=2048, fraction=0.4, max_layers=4
+        )
+
+    assert count == 0
+    # One line naming the shared table, not one per layer.
+    shared = [r for r in caplog.records if "program table is full" in r.message]
+    assert len(shared) == 1
+    assert not [r for r in caplog.records if "Skipping one Qwen MLP" in r.message]
+
+
+def test_program_table_full_only_matches_the_table_refusal():
+    assert ane_patch._program_table_full(RuntimeError("load failed (0x50004)"))
+    # The per-program constant cap is a different refusal at the same stage.
+    assert not ane_patch._program_table_full(RuntimeError("load failed (0x20004)"))
+
+
 def test_enable_marks_only_requested_number_of_loaded_mlps(monkeypatch):
     monkeypatch.setattr(fast, "qwen35_ane_available", lambda: True)
     monkeypatch.setattr(fast, "has_symbol", lambda name: False)
