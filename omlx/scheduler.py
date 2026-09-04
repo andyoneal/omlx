@@ -189,6 +189,7 @@ class _AdmissionEstimate:
     transient: int
     floor_chunk: int
     kv_len: int
+    gathered_core: bool
     estimated: int
 
 
@@ -10147,6 +10148,7 @@ class Scheduler:
             transient=transient,
             floor_chunk=floor_chunk,
             kv_len=kv_len,
+            gathered_core=gathered_core,
             estimated=int(current) + kv_exact + transient,
         )
 
@@ -10249,6 +10251,35 @@ class Scheduler:
                 cached_tokens,
                 request_id,
                 message,
+            )
+            # The message names one KV+SDPA total, so a rejection cannot be
+            # attributed to a term without re-deriving the whole estimate by
+            # hand -- and the two halves come from different places: kv_exact
+            # is exact-shape arithmetic, while transient is
+            # max(predicted, observed_max) and the predicted half is itself
+            # driven by measured per-token rates. Log them apart, the way
+            # _guard_prefill_chunk already does for the in-loop guard. The
+            # tracker keeps a separate history per pricing regime, so read
+            # the one the estimate actually charged -- the bare property is
+            # the dense history and would silently misreport a gathered-QSA
+            # rejection.
+            tracker = self._prefill_transient_tracker
+            logger.warning(
+                "[preflight] admission terms: current=%.2fGB kv_exact=%.2fGB "
+                "transient=%.2fGB observed_max=%.2fGB floor_chunk=%d kv_len=%d "
+                "gathered_core=%s",
+                current / 1024**3,
+                est.kv_exact / 1024**3,
+                est.transient / 1024**3,
+                (
+                    float(tracker.observed_max_bytes_for(est.gathered_core))
+                    if tracker is not None
+                    else 0.0
+                )
+                / 1024**3,
+                est.floor_chunk,
+                est.kv_len,
+                est.gathered_core,
             )
             raise PrefillMemoryExceededError(
                 message=message,
