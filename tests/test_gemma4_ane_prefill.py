@@ -388,10 +388,33 @@ def test_variant_table_records_a_reason_for_every_unsupported_variant():
             assert row["reason"]
 
 
-def test_two_ane_dies_only_on_ultra(monkeypatch):
-    """Only Ultra parts expose the second die the dual path submits to."""
+def test_the_driver_count_decides_not_the_chip_name(monkeypatch):
+    """The device is the authority; the marketing name only describes the SKU.
+
+    Both directions matter. A two-die part the name parser does not recognise
+    as Ultra would otherwise lose the dual path, and a machine reporting one
+    engine must not get two banks because its model number says Ultra.
+    """
     import omlx.utils.hardware as hardware
 
+    for measured, chip, expected in (
+        (2, "Apple M1 Max", True),
+        (1, "Apple M3 Ultra", False),
+        (2, "Apple M3 Ultra", True),
+        (1, "Apple M1 Max", False),
+    ):
+        monkeypatch.setattr(
+            hardware, "get_ane_instance_count", lambda m=measured: m
+        )
+        monkeypatch.setattr(hardware, "get_chip_name", lambda c=chip: c)
+        assert gemma4_patch._has_two_ane_dies() is expected, (measured, chip)
+
+
+def test_chip_name_decides_when_the_property_is_absent(monkeypatch):
+    """A host without the driver property keeps the previous behaviour."""
+    import omlx.utils.hardware as hardware
+
+    monkeypatch.setattr(hardware, "get_ane_instance_count", lambda: None)
     for chip, expected in (
         ("Apple M3 Ultra", True),
         ("Apple M1 Max", False),
@@ -403,12 +426,18 @@ def test_two_ane_dies_only_on_ultra(monkeypatch):
 
 
 def test_undetectable_chip_assumes_one_ane(monkeypatch):
-    """A detection failure must not leave two banks requested."""
+    """A detection failure must not leave two banks requested.
+
+    Both sources have to fail for this to be the fallback under test -- with
+    the driver property readable it answers first and the chip name is never
+    consulted.
+    """
     import omlx.utils.hardware as hardware
 
     def boom():
         raise OSError("no chip info")
 
+    monkeypatch.setattr(hardware, "get_ane_instance_count", lambda: None)
     monkeypatch.setattr(hardware, "get_chip_name", boom)
     assert gemma4_patch._has_two_ane_dies() is False
 

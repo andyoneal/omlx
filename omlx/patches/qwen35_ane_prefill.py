@@ -59,18 +59,56 @@ def _program_table_full(exc: BaseException) -> bool:
 def ane_instance_count() -> int:
     """How many physical ANE instances this machine exposes.
 
-    Only Ultra parts present two, as instance hints 1 and 2. Detection failures
-    answer one, which is the safe direction: an unpinned dispatch runs
-    everywhere, while a hint naming an instance the machine does not have is
-    refused rather than clamped wherever the key is read.
+    Read from the driver -- `ANEDevicePropertyNumANEs` on the ANE load
+    balancer -- rather than inferred from the chip name, because the name
+    describes the SKU and the property describes the device. The distinction
+    has bitten in both directions: a two-die part the name parser does not
+    recognise as Ultra loses the dual path, and the name cannot see a machine
+    whose engine count differs from what its model number implies.
+
+    The chip name stays as a fallback for a host where the property is absent,
+    so this is never worse than reading the name alone. Detection failing
+    entirely answers one, which is the safe direction: an unpinned dispatch
+    runs everywhere, while a hint naming an instance the machine does not have
+    is refused rather than clamped wherever the key is read.
+
+    The driver floors its own count at one, so a failed enumeration reports one
+    rather than zero and cannot be told apart from a genuine single engine. The
+    only detectable inconsistency is a count of one on a part whose name
+    implies two dies, which is logged rather than silently resolved -- the
+    property still wins, because it describes the device, but a reader who
+    expected two engines gets told why they have one.
+
+    Each source is read under its own guard: a chip name that cannot be parsed
+    must not discard a count the driver supplied, and vice versa.
     """
+    measured = None
+    try:
+        from omlx.utils.hardware import get_ane_instance_count
+
+        measured = get_ane_instance_count()
+    except Exception:
+        logger.debug("ANE engine count unreadable from the driver", exc_info=True)
+
+    named_dual = None
     try:
         from omlx.utils.hardware import get_chip_name, parse_chip_info
 
-        return 2 if parse_chip_info(get_chip_name())[1] == "Ultra" else 1
+        named_dual = parse_chip_info(get_chip_name())[1] == "Ultra"
     except Exception:
-        logger.debug("ANE instance count undetermined; assuming one", exc_info=True)
-        return 1
+        logger.debug("Chip name unavailable for ANE engine count", exc_info=True)
+
+    if measured is None:
+        return 2 if named_dual else 1
+    if measured < 2 and named_dual:
+        logger.warning(
+            "The ANE driver reports %s engine(s) on a part whose name implies "
+            "two dies; trusting the driver. A failed device-tree enumeration "
+            "also reports one, so if this machine has two engines the dual "
+            "path is being forfeited rather than declined.",
+            measured,
+        )
+    return max(1, measured)
 
 
 def dual_instance_hints() -> tuple[int, int]:

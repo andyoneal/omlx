@@ -11,6 +11,7 @@ from omlx.utils.hardware import (
     DEFAULT_MEMORY_BYTES,
     HardwareInfo,
     format_bytes,
+    get_ane_instance_count,
     get_chip_name,
     get_max_working_set_bytes,
     get_total_memory_bytes,
@@ -71,6 +72,51 @@ class TestHardwareInfo:
             )
             assert info.chip_name == chip_name
             assert info.total_memory_gb == memory_gb
+
+
+class TestGetAneInstanceCount:
+    """Test cases for get_ane_instance_count function."""
+
+    _ONE_ENGINE = (
+        '    | +-o ANEDriverRoot  <class H1xANELoadBalancer, id 0x100000290>\n'
+        '    | | |   "DeviceProperties" = {"ANEDevicePropertyNumANEs"=1}\n'
+    )
+
+    def test_reads_the_driver_property(self):
+        """The count comes from the load balancer's DeviceProperties."""
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(stdout=self._ONE_ENGINE, returncode=0)
+            assert get_ane_instance_count() == 1
+
+    def test_reads_two_engines(self):
+        """A two-die part reporting two is taken at face value."""
+        two = self._ONE_ENGINE.replace("NumANEs\"=1", "NumANEs\"=2")
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(stdout=two, returncode=0)
+            assert get_ane_instance_count() == 2
+
+    def test_takes_the_highest_of_several_nodes(self):
+        """Whichever node carries the real count decides."""
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(
+                stdout=self._ONE_ENGINE + self._ONE_ENGINE.replace(
+                    "NumANEs\"=1", "NumANEs\"=2"
+                ),
+                returncode=0,
+            )
+            assert get_ane_instance_count() == 2
+
+    def test_absent_property_is_undetermined_not_one(self):
+        """Callers must be able to fall back, so absence is not a count."""
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(stdout="no such node\n", returncode=0)
+            assert get_ane_instance_count() is None
+
+    def test_ioreg_failure_is_undetermined(self):
+        """A headless context without ioreg on PATH must not answer a count."""
+        with patch("subprocess.run") as mock_run:
+            mock_run.side_effect = Exception("ioreg not available")
+            assert get_ane_instance_count() is None
 
 
 class TestGetChipName:

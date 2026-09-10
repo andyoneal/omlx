@@ -271,6 +271,44 @@ def get_gpu_core_count() -> Optional[int]:
     return None
 
 
+def get_ane_instance_count() -> Optional[int]:
+    """Physical ANE instances, from the driver rather than the chip name.
+
+    The ANE load balancer publishes the count as `ANEDevicePropertyNumANEs`
+    under its `DeviceProperties`, readable without root. `None` means the
+    property was not found, which callers should treat as undetermined rather
+    than as one -- the marketing name is the only fallback left at that point.
+
+    Prefer this over inferring two engines from an "Ultra" chip name: the name
+    describes the SKU and this describes the device.
+
+    The driver derives the value by probing `/arm-io/ane0` through `ane3` in
+    the device tree and counting the nodes that exist, then flooring the result
+    at one. So it is a total rather than a per-node figure -- every node that
+    publishes it publishes the same number, which is why taking the highest
+    value found is safe however many nodes appear -- it can legally exceed two,
+    and it never reads zero. A failed enumeration is therefore indistinguishable
+    from one real engine; callers wanting to catch that must compare against
+    something else.
+    """
+    try:
+        result = subprocess.run(
+            [_IOREG, "-r", "-c", "H1xANELoadBalancer"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except Exception:
+        return None
+    counts = [
+        int(value)
+        for value in re.findall(
+            r'"ANEDevicePropertyNumANEs"\s*=\s*(\d+)', result.stdout
+        )
+    ]
+    return max(counts) if counts else None
+
+
 def get_io_platform_uuid() -> Optional[str]:
     """Get IOPlatformUUID from ioreg (unique per device)."""
     try:

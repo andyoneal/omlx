@@ -3393,14 +3393,103 @@ def test_dual_instance_hints_name_no_instance_on_one_engine(monkeypatch):
 @pytest.mark.real_ane_instance_count
 def test_instance_count_answers_one_when_detection_fails(monkeypatch):
     """Unpinned runs everywhere; a wrong pin is rejected where it is read."""
-    import omlx.utils.hardware as hardware
     import omlx.patches.qwen35_ane_prefill as patch
+    import omlx.utils.hardware as hardware
 
     def _boom():
         raise RuntimeError("no chip name")
 
+    monkeypatch.setattr(hardware, "get_ane_instance_count", lambda: None)
     monkeypatch.setattr(hardware, "get_chip_name", _boom)
     assert patch.ane_instance_count() == 1
+
+
+@pytest.mark.real_ane_instance_count
+def test_instance_count_prefers_the_driver_over_the_chip_name(monkeypatch):
+    """The count the device reports outranks the one its model number implies."""
+    import omlx.patches.qwen35_ane_prefill as patch
+    import omlx.utils.hardware as hardware
+
+    monkeypatch.setattr(hardware, "get_chip_name", lambda: "Apple M1 Max")
+    monkeypatch.setattr(hardware, "get_ane_instance_count", lambda: 2)
+    assert patch.ane_instance_count() == 2
+
+    monkeypatch.setattr(hardware, "get_chip_name", lambda: "Apple M3 Ultra")
+    monkeypatch.setattr(hardware, "get_ane_instance_count", lambda: 1)
+    assert patch.ane_instance_count() == 1
+
+
+@pytest.mark.real_ane_instance_count
+def test_instance_count_never_goes_below_one(monkeypatch):
+    """A zero or negative reading must not produce an unusable count."""
+    import omlx.patches.qwen35_ane_prefill as patch
+    import omlx.utils.hardware as hardware
+
+    monkeypatch.setattr(hardware, "get_ane_instance_count", lambda: 0)
+    assert patch.ane_instance_count() == 1
+
+
+@pytest.mark.real_ane_instance_count
+def test_instance_count_warns_when_the_driver_contradicts_the_name(
+    monkeypatch, caplog
+):
+    """One engine on a two-die SKU is the only detectable bad enumeration.
+
+    The driver floors its count at one, so a failed device-tree scan is
+    indistinguishable from a real single engine. Disagreeing with the name is
+    the one signal available, and it must not pass silently.
+    """
+    import omlx.patches.qwen35_ane_prefill as patch
+    import omlx.utils.hardware as hardware
+
+    monkeypatch.setattr(hardware, "get_ane_instance_count", lambda: 1)
+    monkeypatch.setattr(hardware, "get_chip_name", lambda: "Apple M3 Ultra")
+    with caplog.at_level(logging.WARNING, logger=patch.logger.name):
+        assert patch.ane_instance_count() == 1
+    assert any(
+        "implies two dies" in record.getMessage() for record in caplog.records
+    )
+
+
+@pytest.mark.real_ane_instance_count
+def test_instance_count_does_not_warn_when_the_sources_agree(monkeypatch, caplog):
+    """One engine on a one-die part is the ordinary case, not a contradiction."""
+    import omlx.patches.qwen35_ane_prefill as patch
+    import omlx.utils.hardware as hardware
+
+    monkeypatch.setattr(hardware, "get_ane_instance_count", lambda: 1)
+    monkeypatch.setattr(hardware, "get_chip_name", lambda: "Apple M1 Max")
+    with caplog.at_level(logging.WARNING, logger=patch.logger.name):
+        assert patch.ane_instance_count() == 1
+    assert not caplog.records
+
+
+@pytest.mark.real_ane_instance_count
+def test_a_broken_chip_name_does_not_discard_the_driver_count(monkeypatch):
+    """Each source is guarded alone, so one failing must not lose the other."""
+    import omlx.patches.qwen35_ane_prefill as patch
+    import omlx.utils.hardware as hardware
+
+    def _boom():
+        raise RuntimeError("no chip name")
+
+    monkeypatch.setattr(hardware, "get_ane_instance_count", lambda: 2)
+    monkeypatch.setattr(hardware, "get_chip_name", _boom)
+    assert patch.ane_instance_count() == 2
+
+
+@pytest.mark.real_ane_instance_count
+def test_a_broken_driver_read_falls_back_to_the_name(monkeypatch):
+    """The reverse direction: ioreg raising still leaves the SKU readable."""
+    import omlx.patches.qwen35_ane_prefill as patch
+    import omlx.utils.hardware as hardware
+
+    def _boom():
+        raise OSError("ioreg missing")
+
+    monkeypatch.setattr(hardware, "get_ane_instance_count", _boom)
+    monkeypatch.setattr(hardware, "get_chip_name", lambda: "Apple M3 Ultra")
+    assert patch.ane_instance_count() == 2
 
 
 @pytest.fixture(scope="module")
