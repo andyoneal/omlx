@@ -3448,6 +3448,19 @@ def enable_qwen35_ane_prefill(
         )
         return 0
 
+    if dual_ane and ane_instance_count() < 2:
+        # Two banks on one die doubles the resident program count against a
+        # ceiling the whole machine shares, and puts two submitting threads on
+        # one engine. Treat the setting as "allow dual" rather than "use
+        # dual". The Gemma 4 wrapper downgrades before delegating here, so
+        # this fires for callers that have no wrapper of their own rather than
+        # logging a second time for the ones that do.
+        logger.info(
+            "ANE prefill: one physical ANE detected, compiling one program "
+            "per layer instead of the requested dual-ANE split"
+        )
+        dual_ane = False
+
     config = _AnePrefillConfig(
         sequence_length=sequence_length,
         fraction=fraction,

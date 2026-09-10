@@ -725,6 +725,81 @@ def test_enable_names_the_shared_table_once_when_program_load_is_refused(
     assert not [r for r in caplog.records if "Skipping one Qwen MLP" in r.message]
 
 
+def _capture_enable_config(monkeypatch):
+    """Drive the shared entry point far enough to see the config it builds."""
+    monkeypatch.setattr(fast, "qwen35_ane_available", lambda: True)
+    monkeypatch.setattr(fast, "has_symbol", lambda name: False)
+    monkeypatch.setattr(ane_patch, "_install_dispatch", lambda: True)
+    monkeypatch.setattr(ane_patch, "_eligible_pair", lambda mlp: True)
+    compiled = []
+
+    def compile_pair(mlp, config):
+        compiled.append(config)
+        return object()
+
+    monkeypatch.setattr(ane_patch, "_compile_pair", compile_pair)
+    return compiled
+
+
+@pytest.mark.real_ane_instance_count
+def test_shared_enable_downgrades_dual_ane_on_one_engine(monkeypatch):
+    """The runtime every family delegates to must not build two banks on one die.
+
+    The Gemma 4 wrapper downgrades before delegating, so this covers the
+    callers that have no wrapper of their own -- which is every other family
+    reaching this entry point directly.
+    """
+    compiled = _capture_enable_config(monkeypatch)
+    monkeypatch.setattr(ane_patch, "ane_instance_count", lambda: 1)
+
+    ane_patch.enable_qwen35_ane_prefill(
+        _Model(2), sequence_length=2048, fraction=0.4, max_layers=2, dual_ane=True
+    )
+
+    assert compiled
+    assert all(config.dual_ane is False for config in compiled)
+
+
+@pytest.mark.real_ane_instance_count
+def test_shared_enable_keeps_dual_ane_on_two_engines(monkeypatch):
+    """The downgrade must not fire where the second engine genuinely exists."""
+    compiled = _capture_enable_config(monkeypatch)
+    monkeypatch.setattr(ane_patch, "ane_instance_count", lambda: 2)
+
+    ane_patch.enable_qwen35_ane_prefill(
+        _Model(2), sequence_length=2048, fraction=0.4, max_layers=2, dual_ane=True
+    )
+
+    assert compiled
+    assert all(config.dual_ane is True for config in compiled)
+
+
+@pytest.mark.real_ane_instance_count
+def test_shared_enable_stays_quiet_when_the_caller_already_downgraded(
+    monkeypatch, caplog
+):
+    """A wrapper that downgraded first must not produce a second log line."""
+    compiled = _capture_enable_config(monkeypatch)
+    monkeypatch.setattr(ane_patch, "ane_instance_count", lambda: 1)
+
+    with caplog.at_level(logging.INFO, logger=ane_patch.logger.name):
+        ane_patch.enable_qwen35_ane_prefill(
+            _Model(2),
+            sequence_length=2048,
+            fraction=0.4,
+            max_layers=2,
+            dual_ane=False,
+        )
+
+    assert compiled
+    assert all(config.dual_ane is False for config in compiled)
+    assert not [
+        record
+        for record in caplog.records
+        if "one physical ANE detected" in record.getMessage()
+    ]
+
+
 def test_program_table_full_only_matches_the_table_refusal():
     assert ane_patch._program_table_full(RuntimeError("load failed (0x50004)"))
     # The per-program constant cap is a different refusal at the same stage.
