@@ -176,6 +176,33 @@ def _fused_cpu_fraction_grid() -> list[float]:
 _CALIBRATION_CPU_THREADS = 8
 _COARSE_SAMPLES = 7
 _FINALIST_SAMPLES = 9
+_BANK_LATENCY_TOLERANCE = 0.05
+
+
+def _cheapest_within_tolerance(
+    results: list[tuple[float, float, float]],
+) -> tuple[float, float, float]:
+    """Narrowest ANE slice whose latency is within tolerance of the fastest."""
+    # The bank grows with the ANE fraction and the widest slice returns about
+    # half the gain per byte that the narrower ones do, so price it in latency.
+    budget = min(results)[0] * (1.0 + _BANK_LATENCY_TOLERANCE)
+    return min(
+        (result for result in results if result[0] <= budget),
+        key=lambda result: (result[1], result[0], result[2]),
+    )
+
+
+def _preferred_result(completed: list[dict[str, Any]]) -> dict[str, Any]:
+    """Narrowest measured slice whose throughput is within tolerance."""
+    fastest = max(result["processing_tps"] for result in completed)
+    floor = fastest / (1.0 + _BANK_LATENCY_TOLERANCE)
+    return min(
+        (result for result in completed if result["processing_tps"] >= floor),
+        key=lambda result: (
+            float(result["mlp_fraction"] or 0.0),
+            -result["processing_tps"],
+        ),
+    )
 
 
 def _cpu_thread_grid() -> list[int]:
@@ -1203,7 +1230,7 @@ def _calibrate_fused_components_sync(
             patch, mlp, x, config, state, coarse_repeats
         )
         mlp_results.append((latency, fraction, cpu_fraction))
-        preview_ms, preview_ane, preview_cpu = min(mlp_results)
+        preview_ms, preview_ane, preview_cpu = _cheapest_within_tolerance(mlp_results)
         _preview_phase(
             run,
             _GATE_SLOT,
@@ -1227,7 +1254,7 @@ def _calibrate_fused_components_sync(
         mx.clear_cache()
     if not mlp_results:
         raise RuntimeError("Every representative fused MLP candidate failed")
-    mlp_ms, best_mlp, best_cpu = min(mlp_results)
+    mlp_ms, best_mlp, best_cpu = _cheapest_within_tolerance(mlp_results)
     if best_cpu <= 0:
         run.total -= thread_points - 1
     _complete_phase(
@@ -1861,7 +1888,7 @@ def _calibrate_components_sync(
                 patch, mlp, x, config, state, calibration_repeats
             )
             gate_results.append((latency, fraction, cpu_fraction))
-            preview = min(gate_results)
+            preview = _cheapest_within_tolerance(gate_results)
             _preview_phase(
                 run,
                 _GATE_SLOT,
@@ -1880,7 +1907,7 @@ def _calibrate_components_sync(
             )
     if not gate_results:
         raise RuntimeError("Every representative MLP gate/up candidate failed")
-    gate_ms, best_mlp, best_cpu = min(gate_results)
+    gate_ms, best_mlp, best_cpu = _cheapest_within_tolerance(gate_results)
     _complete_phase(
         run,
         _GATE_SLOT,
@@ -2233,7 +2260,7 @@ async def run_tuning(run: ANETuningRun, engine_pool: Any) -> None:
             for index in (_VERIFY_SLOT, _REFINE_SLOT)
             if run.results[index]["processing_tps"] is not None
         ]
-        best = max(completed, key=lambda result: result["processing_tps"])
+        best = _preferred_result(completed)
         if (
             best["processing_tps"] is None
             or best["speedup_percent"] is None
