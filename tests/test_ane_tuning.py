@@ -42,6 +42,31 @@ def test_cpu_worker_search_space_is_independent_of_saved_settings():
     assert ane_tuning._FINALIST_SAMPLES == 9
 
 
+def test_selection_prefers_a_narrower_slice_within_tolerance():
+    # Latencies for the measured 12B curve: the widest slice wins on wall time
+    # and returns half the gain per byte that the one below it does.
+    results = [(920.8, 0.20, 0.0), (854.7, 0.40, 0.0), (826.4, 0.60, 0.0)]
+    assert ane_tuning._cheapest_within_tolerance(results) == (854.7, 0.40, 0.0)
+
+
+def test_recommendation_prefers_a_narrower_measured_slice():
+    # The profile refinement can propose a wider slice than calibration chose,
+    # so the same price applies to the slot that actually ran.
+    completed = [
+        {"processing_tps": 391.0, "mlp_fraction": 0.60},
+        {"processing_tps": 381.0, "mlp_fraction": 0.40},
+    ]
+    assert ane_tuning._preferred_result(completed)["mlp_fraction"] == 0.40
+
+
+def test_recommendation_keeps_a_decisively_faster_slice():
+    completed = [
+        {"processing_tps": 391.0, "mlp_fraction": 0.60},
+        {"processing_tps": 354.0, "mlp_fraction": 0.40},
+    ]
+    assert ane_tuning._preferred_result(completed)["mlp_fraction"] == 0.60
+
+
 def test_candidate_settings_are_transient_copy():
     base = ModelSettings(qwen35_ane_prefill_tail_padding_min_tokens=1500)
     request = ane_tuning.ANETuningRequest(model_id="qwen", sequence_length=2048)
