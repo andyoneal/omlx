@@ -1362,7 +1362,7 @@
                                 </template>
 
                                 <!-- Gemma 4 private ANE/GPU prompt processing -->
-                                <template x-if="isGemma4AnePrefillModel(selectedModel)">
+                                <template x-if="selectedModel?.ane_prefill_backend === 'gemma4'">
                                     <div class="p-4 bg-neutral-50 rounded-xl space-y-4 mb-3">
                                         <div class="flex items-start justify-between gap-3">
                                             <div class="min-w-0">

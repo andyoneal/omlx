@@ -722,7 +722,7 @@ def test_gemma4_ane_section_is_gated_on_the_gemma_family():
         "<!-- Gemma 4 private ANE/GPU prompt processing -->",
         "<!-- TurboQuant KV Cache -->",
     )
-    assert 'x-if="isGemma4AnePrefillModel(selectedModel)"' in section
+    assert "ane_prefill_backend === 'gemma4'" in section
     for field in (
         "gemma4_ane_prefill_enabled",
         "gemma4_ane_prefill_sequence_length",
@@ -738,8 +738,9 @@ def test_gemma4_ane_section_is_gated_on_the_gemma_family():
     for absent in ("gdn", "cpu_", "fused_down"):
         assert f"gemma4_ane_prefill_{absent}" not in html
 
-    assert "isGemma4AnePrefillModel(model)" in script
-    assert "GEMMA4_ANE_CONFIG_PREFIXES = ['gemma4']" in script
+    # The family comes from the server's ane_prefill_backend, so the client
+    # keeps no model-type list of its own.
+    assert "GEMMA4_ANE_CONFIG_PREFIXES" not in script
 
 
 def test_gemma4_ane_strings_exist_in_every_locale():
