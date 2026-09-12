@@ -72,6 +72,8 @@ def ane_prefill_backend(model_type: str | None) -> str | None:
         return "k2"
     if model_type.startswith(("qwen3_5", "qwen3_6", "qwen3_8")):
         return "qwen"
+    if model_type.startswith("gemma4"):
+        return "gemma4"
     return None
 
 
@@ -85,7 +87,7 @@ def ane_prefill_fraction(value: float | None, model_type: str | None) -> float:
 def validate_ane_prefill(settings: dict, model_type: str | None) -> None:
     """Validate common controls against the selected backend's limits."""
     backend = ane_prefill_backend(model_type)
-    if settings.get("qwen35_ane_prefill_enabled") and backend is None:
+    if settings.get("qwen35_ane_prefill_enabled") and backend not in ("qwen", "k2"):
         raise ValueError("ANE prefill is unavailable for this model.")
     width = settings.get("qwen35_ane_prefill_sequence_length", 2048)
     # The alignment is 32 fp16 elements, a 64-byte W offset, so 160 compiles

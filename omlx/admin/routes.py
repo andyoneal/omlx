@@ -3044,9 +3044,7 @@ async def update_model_settings(
     # minus the GDN, CPU and fused-down keys the family has no use for.
     if "gemma4_ane_prefill_enabled" in sent:
         enabled = bool(request.gemma4_ane_prefill_enabled)
-        config_type = str(getattr(entry, "config_model_type", "") or "")
-        config_type = config_type.lower().replace("-", "_")
-        if enabled and not config_type.startswith("gemma4"):
+        if enabled and ane_prefill_backend(entry.config_model_type) != "gemma4":
             raise HTTPException(
                 status_code=400,
                 detail="Gemma 4 ANE prefill is available only for Gemma 4 models.",
@@ -8333,8 +8331,7 @@ async def start_ane_tuning(
         )
 
     tuning_request.backend = "k2" if entry.config_model_type == "k2_horizon" else "qwen"
-    config_type = str(getattr(entry, "config_model_type", "") or "")
-    if config_type.lower().replace("-", "_").startswith("gemma4"):
+    if ane_prefill_backend(entry.config_model_type) == "gemma4":
         # Gemma 4 has no GDN stack and no CPU-shared GeGLU merge. The existing
         # capability flags collapse those phases to zero points, so this needs
         # no tuner mechanism of its own.

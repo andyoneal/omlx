@@ -472,3 +472,12 @@ def test_dual_ane_survives_on_two_die_hardware(monkeypatch):
 
     gemma4_patch.enable_gemma4_ane_prefill(SimpleNamespace(), dual_ane=True)
     assert captured["dual_ane"] is True
+
+
+def test_ane_prefill_backend_names_the_gemma_family():
+    """The admin UI gates on this rather than matching model types itself."""
+    from omlx.model_settings import ane_prefill_backend
+
+    for model_type in ("gemma4", "gemma4_text", "gemma4-unified"):
+        assert ane_prefill_backend(model_type) == "gemma4"
+    assert ane_prefill_backend("qwen3_5") == "qwen"
