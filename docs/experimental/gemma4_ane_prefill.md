@@ -629,7 +629,9 @@ interleaving removes. The ANE itself does not thermally throttle.
 
 ### End-to-end prefill throughput
 
-Not yet measured. The method is the built-in throughput benchmark
+The only end-to-end numbers are the tuner's own arms in the ordering table
+above: 31B +11.3% at share 0.30 with the default ordering. The benchmark is
+not yet run. Its method is the built-in throughput benchmark
 (`code_python` context, TG=128, greedy, fresh server and cleared SSD cache per
 configuration, `Full · 2048` warm-up, ANE prompt alignment on) at 4K / 16K /
 32K, reporting median and dispersion over N >= 5.
