@@ -137,8 +137,8 @@ def _patch_inner_model(mod: Any) -> None:
         from ..mlx_lm_gemma4_assistant import build_draft_model
 
         self.mtp = build_draft_model(assistant)
-        # Function refs read weights at call time, so binding pre-load is safe.
-        self.mtp.bind(self)
+        # Bound at the first draft: a bind here pins the float embed_tokens
+        # that nn.quantize() replaces, and materialize_lazy_state builds it.
         self._omlx_mtp_chain = True
         self._omlx_mtp_depth = get_mtp_depth()
 

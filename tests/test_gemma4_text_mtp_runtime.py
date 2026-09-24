@@ -165,6 +165,13 @@ def test_attach_and_chain_flags_when_active():
     assert model.make_mtp_cache() == []
 
 
+def test_attach_leaves_drafter_unbound():
+    # A bind here would pin the float embed_tokens that nn.quantize() replaces.
+    pytest.importorskip("mlx_vlm.speculative.drafters.gemma4_assistant")
+    lm_mtp.set_mtp_active(True)
+    assert _inner(_with_assistant()).mtp._input_embed is None
+
+
 # ---------------------------------------------------------------------------
 # What a backbone forward has to hand the head
 # ---------------------------------------------------------------------------
@@ -518,8 +525,8 @@ class TestRejectedTailSlicing:
         assert inputs_embeds.shape == (1, 1, 48)
 
     def test_a_stale_bind_is_refreshed_before_drafting(self):
-        # nn.quantize() swaps embed_tokens after the __init__-time bind; a
-        # stale bind drafts through a random-init embedding.
+        # The head binds at its first draft, after nn.quantize() has swapped
+        # embed_tokens; a stale bind drafts through a random-init embedding.
         model, drafter = _stubbed_head_model(captured=2, committed=2)
         _draft(model)
         drafter.bind.assert_called_once_with(model)

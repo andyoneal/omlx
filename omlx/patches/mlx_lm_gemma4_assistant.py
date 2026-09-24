@@ -81,9 +81,8 @@ def draft_step(host: Any, hidden_states, next_token_ids, return_hidden: bool = F
     so there is no cache to thread.
     """
     drafter = host.mtp
-    # nn.quantize() swaps embed_tokens for a QuantizedEmbedding after
-    # construction, so a bind taken in __init__ can point at a random-init
-    # module — which drafts garbage and reads as a ~10% accept rate.
+    # Bind on first use and whenever embed_tokens is swapped; a stale
+    # module drafts through random-init weights (~10% accept).
     if drafter._input_embed is not host.model.embed_tokens:
         drafter.bind(host)
 
