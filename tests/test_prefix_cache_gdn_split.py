@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """End-to-end tests for SSD-only GDN sidecars plus normal KV blocks."""
 
+import time
 from unittest.mock import MagicMock
 
 import mlx.core as mx
@@ -14,6 +15,16 @@ from omlx.scheduler import Scheduler, SchedulerConfig, _BoundarySnapshotProvider
 
 BLOCK_SIZE = 4
 LAYER_TYPES = ["KVCache", "ArraysCache"]
+
+
+def _drain_boundary_writes(store: BoundarySnapshotSSDStore) -> None:
+    """Wait for the writer thread, since ``save`` only enqueues the snapshot."""
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline:
+        if store.pending_bytes == 0:
+            return
+        time.sleep(0.01)
+    raise AssertionError("boundary snapshot writes did not drain")
 
 
 class _HybridModel:
@@ -121,6 +132,7 @@ def test_split_store_restores_one_sidecar_and_walks_back(tmp_path):
                 [MagicMock()],
                 lambda _snapshot, extracted=extracted: (extracted, None),
             )
+            _drain_boundary_writes(boundary)
 
         provider = _BoundarySnapshotProvider(
             boundary,
@@ -223,6 +235,7 @@ def test_split_store_restores_one_sidecar_and_walks_back(tmp_path):
                 [MagicMock()],
                 lambda _snapshot: (_hybrid_extracted(12, 12.0), None),
             )
+            _drain_boundary_writes(legacy_boundary)
             legacy_staged = legacy_boundary.take_staged_file(
                 "legacy-request", 12
             )
@@ -301,6 +314,7 @@ def test_split_store_commits_single_final_sidecar_outside_provider_index(tmp_pat
             [MagicMock()],
             lambda _snapshot: (extracted, None),
         )
+        _drain_boundary_writes(boundary)
         # Scheduler excludes the latest snapshot from the provider's mapping;
         # it is still staged and must be committed for the final block.
         provider = _BoundarySnapshotProvider(
@@ -369,6 +383,7 @@ def test_split_dedup_recreates_evicted_sidecar(tmp_path):
                 [MagicMock()],
                 lambda _snapshot, extracted=extracted: (extracted, None),
             )
+            _drain_boundary_writes(boundary)
         original_provider = _BoundarySnapshotProvider(
             boundary,
             "dedup-original",
@@ -399,6 +414,7 @@ def test_split_dedup_recreates_evicted_sidecar(tmp_path):
             [MagicMock()],
             lambda _snapshot: (replacement, None),
         )
+        _drain_boundary_writes(boundary)
         repair_provider = _BoundarySnapshotProvider(
             boundary,
             "dedup-repair",
@@ -464,6 +480,7 @@ def test_split_restore_walks_back_from_structurally_invalid_sidecar(tmp_path):
                 [MagicMock()],
                 lambda _snapshot, extracted=extracted: (extracted, None),
             )
+            _drain_boundary_writes(boundary)
 
         provider = _BoundarySnapshotProvider(
             boundary,
@@ -552,6 +569,7 @@ def test_split_store_rejects_placeholder_when_checkpoint_commit_fails(tmp_path):
             [MagicMock()],
             lambda _snapshot: (extracted, None),
         )
+        _drain_boundary_writes(boundary)
         provider = _BoundarySnapshotProvider(
             boundary,
             request_id,
@@ -721,6 +739,7 @@ def test_split_restore_retries_legacy_candidate_at_the_same_endpoint(tmp_path):
                 [MagicMock()],
                 lambda _snapshot, extracted=extracted: (extracted, None),
             )
+            _drain_boundary_writes(boundary)
         provider = _BoundarySnapshotProvider(
             boundary,
             request_id,
@@ -757,6 +776,7 @@ def test_split_restore_retries_legacy_candidate_at_the_same_endpoint(tmp_path):
             [MagicMock()],
             lambda _snapshot: (_hybrid_extracted(12, 12.0), None),
         )
+        _drain_boundary_writes(legacy_boundary)
         legacy_staged = legacy_boundary.take_staged_file("legacy-request", 12)
         assert legacy_staged is not None
         assert (
@@ -862,6 +882,7 @@ def test_split_restore_retry_budget_is_one_per_block(tmp_path):
                 [MagicMock()],
                 lambda _snapshot, extracted=extracted: (extracted, None),
             )
+            _drain_boundary_writes(boundary)
         provider = _BoundarySnapshotProvider(
             boundary,
             request_id,
