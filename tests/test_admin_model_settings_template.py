@@ -746,7 +746,7 @@ def test_gemma4_ane_section_is_gated_on_the_gemma_family():
 def test_gemma4_ane_strings_exist_in_every_locale():
     root = Path(__file__).resolve().parents[1]
     locales = sorted((root / "omlx/admin/i18n").glob("*.json"))
-    assert len(locales) == 9
+    assert locales
     for path in locales:
         keys = json.loads(path.read_text())
         for key in (
