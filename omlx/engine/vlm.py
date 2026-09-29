@@ -2606,6 +2606,7 @@ class VLMBatchedEngine(BaseEngine):
             try:
                 from ..patches.gemma4_ane_prefill import enable_gemma4_ane_prefill
                 from ..patches.qwen35_ane_prefill import (
+                    ane_prefill_transient_bytes,
                     configure_qwen35_ane_prefill_scheduler,
                 )
 
@@ -2661,6 +2662,13 @@ class VLMBatchedEngine(BaseEngine):
                         scheduler,
                         requested_gemma4_sequence_length,
                     )
+                    # Compiled after the scheduler read the model, so price
+                    # the surfaces here, as the Qwen path does.
+                    monitor = getattr(scheduler, "memory_monitor", None)
+                    if monitor is not None:
+                        monitor.set_ane_prefill_transient_bytes(
+                            ane_prefill_transient_bytes(self._vlm_model)
+                        )
             except Exception:
                 logger.warning("Gemma 4 ANE prefill not enabled", exc_info=True)
 
